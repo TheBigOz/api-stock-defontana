@@ -37,7 +37,7 @@ app.get('/consultar', async (req, res) => {
         const page = await browser.newPage();
         await page.setViewport({ width: 1920, height: 1080 });
         
-        await page.goto('https://gw.defontana.com/login', { waitUntil: 'networkidle2' });
+        await page.goto('https://portal.defontana.com/login', { waitUntil: 'networkidle2' });
 
         // Login
         await page.waitForSelector('input[formcontrolname="email"]');
@@ -178,3 +178,4 @@ app.get('/consultar', async (req, res) => {
 app.listen(port, () => {
     console.log(`Servidor listo en puerto ${port}`);
 });
+
