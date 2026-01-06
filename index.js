@@ -15,15 +15,13 @@ app.get('/consultar', async (req, res) => {
         return res.status(400).json({ error: 'Falta el parámetro SKU' });
     }
 
-    // Limpiamos el SKU (quitamos espacios extra y lo ponemos en mayúsculas por si acaso)
     const skuLimpio = skuBuscado.trim().toUpperCase();
-
     console.log(`--- Iniciando búsqueda para: ${skuLimpio} ---`);
 
     let browser = null;
     try {
         browser = await puppeteer.launch({
-            headless: true, // TRUE para producción
+            headless: true,
             args: [
                 '--no-sandbox', 
                 '--disable-setuid-sandbox',
@@ -33,27 +31,36 @@ app.get('/consultar', async (req, res) => {
             ]
         });
 
-        // 1. LOGIN EN LA PÁGINA PRINCIPAL
         const page = await browser.newPage();
+        
+        // --- CORRECCIÓN 1: Aumentamos la paciencia a 90 segundos (antes 30) ---
+        page.setDefaultNavigationTimeout(90000);
+        page.setDefaultTimeout(90000);
+
         await page.setViewport({ width: 1920, height: 1080 });
         
-        await page.goto('https://portal.defontana.com/login', { waitUntil: 'networkidle2' });
+        // --- CORRECCIÓN 2: Usamos 'domcontentloaded' que es más rápido y falla menos ---
+        console.log('Cargando página de login...');
+        await page.goto('https://gw.defontana.com/login', { waitUntil: 'domcontentloaded' });
 
-        // Login
+        // Esperamos explícitamente al input de correo
         await page.waitForSelector('input[formcontrolname="email"]');
-        await page.type('input[formcontrolname="email"]', 'oz@microchip.cl'); // <--- REVISA TUS CREDENCIALES
-        await page.type('input[formcontrolname="password"]', '@Emmet5264305!'); // <--- REVISA TUS CREDENCIALES
-        await page.click('button.df-primario');
         
-        console.log('Login enviado...');
+        // Escribimos credenciales
+        await page.type('input[formcontrolname="email"]', 'oz@microchip.cl'); 
+        await page.type('input[formcontrolname="password"]', '@Emmet5264305!'); 
         
-        // Esperamos a que cargue el dashboard inicial
-        await page.waitForNavigation({ waitUntil: 'networkidle2' });
+        // Click y esperamos navegación
+        console.log('Enviando credenciales...');
+        await Promise.all([
+            page.click('button.df-primario'),
+            // Esperamos solo a que el HTML cargue, no a que termine toda la red
+            page.waitForNavigation({ waitUntil: 'domcontentloaded' }) 
+        ]);
+        
+        console.log('Login completado. Buscando botón ERP...');
 
         // 2. SALTAR A "ERP DIGITAL" (NUEVA PESTAÑA)
-        console.log('Buscando acceso a ERP Digital...');
-        
-        // Usamos XPath para encontrar el h3 que dice "ERP Digital"
         const erpButtonSelector = "//h3[contains(text(), 'ERP Digital')]";
         await page.waitForXPath(erpButtonSelector);
         const [erpButton] = await page.$x(erpButtonSelector);
@@ -61,76 +68,72 @@ app.get('/consultar', async (req, res) => {
         // Preparamos la captura de la nueva pestaña
         const newTargetPromise = browser.waitForTarget(target => target.opener() === page.target());
         
-        // Hacemos click
         await erpButton.click();
+        console.log('Click en ERP Digital, esperando nueva pestaña...');
         
-        // Esperamos que se abra la nueva pestaña
         const newTarget = await newTargetPromise;
         const erpPage = await newTarget.page();
         
-        // Ahora trabajamos sobre erpPage (la nueva pestaña)
+        // --- Aplicamos la misma paciencia a la nueva pestaña ---
+        if (!erpPage) throw new Error("No se pudo abrir la pestaña del ERP");
+        erpPage.setDefaultNavigationTimeout(90000);
+        erpPage.setDefaultTimeout(90000);
+        
         await erpPage.setViewport({ width: 1920, height: 1080 });
-        await erpPage.waitForNavigation({ waitUntil: 'networkidle2' });
+        // Esperamos a que la nueva pestaña cargue su contenido
+        await erpPage.waitForNavigation({ waitUntil: 'domcontentloaded' });
         
-        console.log('Dentro del ERP. Navegando al inventario...');
+        console.log('Pestaña ERP cargada. Navegando al menú...');
 
-        // 3. NAVEGACIÓN POR EL MENÚ (Inventario -> Artículos)
-        // Nota: A veces es mejor ir directo a la URL si la supiéramos, pero seguiremos tus pasos.
-        
-        // Clic en "Inventario" (buscando por texto)
+        // 3. NAVEGACIÓN DIRECTA (Truco para saltar clics)
+        // Intentamos esperar a que el menú lateral exista antes de interactuar
         const menuInventarioXpath = "//span[contains(@class, 'menu-title') and contains(text(), 'Inventario')]";
         await erpPage.waitForXPath(menuInventarioXpath);
         const [btnInventario] = await erpPage.$x(menuInventarioXpath);
-        await btnInventario.click();
         
-        // Pequeña espera para la animación del menú
-        await new Promise(r => setTimeout(r, 500));
+        // Usamos evaluate para hacer click click (más robusto en Angular)
+        await erpPage.evaluate(el => el.click(), btnInventario);
+        
+        // Espera breve
+        await new Promise(r => setTimeout(r, 1000));
 
-        // Clic en "Artículos"
         const menuArticulosXpath = "//span[contains(@class, 'menu-title') and contains(text(), 'Artículos')]";
         await erpPage.waitForXPath(menuArticulosXpath);
         const [btnArticulos] = await erpPage.$x(menuArticulosXpath);
-        await btnArticulos.click();
+        await erpPage.evaluate(el => el.click(), btnArticulos);
 
-        console.log('Cargando módulo de artículos...');
+        console.log('Entrando a Artículos...');
 
         // 4. BÚSQUEDA DEL PRODUCTO
-        // Esperamos el input de búsqueda que identificaste
         const searchInputSelector = 'input[formcontrolname="searchInputText"]';
         await erpPage.waitForSelector(searchInputSelector);
         
-        // Escribimos el SKU
+        // Borramos lo que haya y escribimos
+        await erpPage.evaluate((sel) => document.querySelector(sel).value = "", searchInputSelector);
         await erpPage.type(searchInputSelector, skuLimpio);
         await erpPage.keyboard.press('Enter');
 
-        console.log(`Buscando SKU: ${skuLimpio}...`);
+        console.log(`Buscando: ${skuLimpio}`);
 
-        // Esperamos un momento a que la tabla reaccione (Defontana puede ser lento)
-        // Esperamos a que aparezca AL MENOS una celda de código o que pase un tiempo prudente
+        // Esperamos resultados (damos tiempo extra por si Defontana es lento buscando)
+        // Esperamos a que aparezca la tabla o pasen 5 segundos
         try {
-            await erpPage.waitForSelector('.mat-column-id', { timeout: 5000 });
+            await erpPage.waitForSelector('.mat-column-id', { timeout: 8000 });
         } catch (e) {
-            console.log('No aparecieron resultados rápido, asumiendo tabla vacía o carga lenta.');
+            console.log('Esperando resultados...');
         }
 
-        // 5. EXTRACCIÓN DE DATOS (Scraping)
+        // 5. EXTRACCIÓN
         const resultado = await erpPage.evaluate((sku) => {
-            // Buscamos todas las filas
             const filas = document.querySelectorAll('tr.mat-row');
-            
-            // Si no hay filas, es que no hay stock (según tu lógica de "Con Stock" activado)
-            if (filas.length === 0) {
-                return null; // Retornamos null para indicar "No encontrado / Agotado"
-            }
+            if (filas.length === 0) return null;
 
-            // Recorremos las filas para encontrar la coincidencia exacta del SKU
-            // Esto es importante porque si buscas "G3" te pueden salir "G30", "G31", etc.
             for (let fila of filas) {
                 const celdaCodigo = fila.querySelector('.mat-column-id');
                 const textoCodigo = celdaCodigo ? celdaCodigo.innerText.trim() : '';
 
+                // Comparación flexible (contiene) o exacta
                 if (textoCodigo === sku) {
-                    // ¡ENCONTRADO! Extraemos los datos
                     const celdaDesc = fila.querySelector('.mat-column-description');
                     const celdaStock = fila.querySelector('.mat-column-stock');
                     const celdaPrecio = fila.querySelector('.mat-column-salePrice');
@@ -143,33 +146,22 @@ app.get('/consultar', async (req, res) => {
                     };
                 }
             }
-            
-            return null; // Si hay filas pero ninguna coincide exactamente
+            return null;
         }, skuLimpio);
 
-        // 6. RESPUESTA AL CLIENTE
         if (resultado) {
-            res.json({
-                status: 'ok',
-                mensaje: 'Producto encontrado',
-                data: resultado
-            });
+            res.json({ status: 'ok', mensaje: 'Producto encontrado', data: resultado });
         } else {
             res.json({
-                status: 'ok', // Status OK porque el robot funcionó, pero el producto no está
+                status: 'ok',
                 mensaje: 'Agotado o No encontrado',
-                data: {
-                    codigo: skuLimpio,
-                    stock: '0 (o no existe)',
-                    precio: '-'
-                }
+                data: { codigo: skuLimpio, stock: '0', precio: '-' }
             });
         }
 
     } catch (error) {
-        console.error('Error fatal:', error);
-        // Tomamos foto del error si es posible para depurar luego
-        res.status(500).json({ error: 'Error en el proceso', detalle: error.message });
+        console.error('ERROR EN SERVIDOR:', error);
+        res.status(500).json({ error: 'Error interno', detalle: error.message });
     } finally {
         if (browser) await browser.close();
     }
@@ -178,4 +170,3 @@ app.get('/consultar', async (req, res) => {
 app.listen(port, () => {
     console.log(`Servidor listo en puerto ${port}`);
 });
-
