@@ -38,10 +38,10 @@ app.get('/consultar', async (req, res) => {
 
         // Llenamos usuario
         await page.waitForSelector('input[formcontrolname="email"]');
-        await page.type('input[formcontrolname="email"]', 'TU_CORREO_AQUI'); // <--- PON TU CORREO REAL
+        await page.type('input[formcontrolname="email"]', 'oz@microchip.cl'); // <--- PON TU CORREO REAL
 
         // Llenamos contraseña
-        await page.type('input[formcontrolname="password"]', 'TU_CONTRASEÑA_AQUI'); // <--- PON TU CLAVE REAL
+        await page.type('input[formcontrolname="password"]', '@Emmet5264305!'); // <--- PON TU CLAVE REAL
 
         // Click en botón entrar (clase que me diste)
         await page.click('button.df-primario');
@@ -73,4 +73,5 @@ app.get('/consultar', async (req, res) => {
 
 app.listen(port, () => {
     console.log(`Servidor escuchando en el puerto ${port}`);
+
 });
