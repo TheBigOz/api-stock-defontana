@@ -34,7 +34,7 @@ app.get('/consultar', async (req, res) => {
         const page = await browser.newPage();
         
         // 1. LOGIN
-        await page.goto('https://gw.defontana.com/login', { waitUntil: 'networkidle2' });
+        await page.goto('https://portal.defontana.com/login', { waitUntil: 'networkidle2' });
 
         // Llenamos usuario
         await page.waitForSelector('input[formcontrolname="email"]');
@@ -75,3 +75,4 @@ app.listen(port, () => {
     console.log(`Servidor escuchando en el puerto ${port}`);
 
 });
+
