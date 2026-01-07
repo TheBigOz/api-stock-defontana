@@ -21,7 +21,7 @@ app.get('/consultar', async (req, res) => {
     let browser = null;
     try {
         browser = await puppeteer.launch({
-            headless: true, // TRUE para que funcione en Render
+            headless: true, 
             args: [
                 '--no-sandbox', 
                 '--disable-setuid-sandbox',
@@ -33,13 +33,13 @@ app.get('/consultar', async (req, res) => {
 
         const page = await browser.newPage();
         
-        // Tiempos de espera generosos para evitar errores 500
+        // Tiempos de espera largos para evitar timeouts en servidor gratis
         page.setDefaultNavigationTimeout(60000); 
         page.setDefaultTimeout(60000);
 
         await page.setViewport({ width: 1920, height: 1080 });
         
-        // 1. LOGIN (En el Portal)
+        // 1. LOGIN (Portal)
         console.log('1. Entrando al Portal...');
         await page.goto('https://portal.defontana.com/login', { waitUntil: 'domcontentloaded' });
 
@@ -48,27 +48,27 @@ app.get('/consultar', async (req, res) => {
         // CREDENCIALES
         await page.type('input[formcontrolname="email"]', 'oz@microchip.cl'); 
         await page.type('input[formcontrolname="password"]', '@Emmet5264305!'); 
-   
+
         console.log('2. Enviando credenciales...');
         
         await Promise.all([
             page.click('button.df-primario'),
+            // Esperamos que cargue la navegación básica
             page.waitForNavigation({ waitUntil: 'domcontentloaded' })
         ]);
         
-        console.log('3. Login OK. Buscando enlace al ERP...');
+        console.log('3. Login OK. Esperando botón ERP...');
 
-        // 2. DETECTAR Y ABRIR NUEVA PESTAÑA
+        // 2. ABRIR NUEVA PESTAÑA
         const erpButtonSelector = "//h3[contains(text(), 'ERP Digital')]";
         await page.waitForXPath(erpButtonSelector);
         const [erpButton] = await page.$x(erpButtonSelector);
         
-        // Preparamos la trampa para capturar la nueva pestaña
         const newTargetPromise = browser.waitForTarget(target => target.opener() === page.target());
         
-        // Hacemos clic (esto abre la nueva pestaña)
+        // Click que abre la pestaña
         await erpButton.click();
-        console.log('4. Click en ERP Digital. Esperando nueva pestaña...');
+        console.log('4. Click en ERP Digital. Abriendo pestaña...');
         
         const newTarget = await newTargetPromise;
         const erpPage = await newTarget.page();
@@ -80,52 +80,50 @@ app.get('/consultar', async (req, res) => {
         erpPage.setDefaultTimeout(60000);
         await erpPage.setViewport({ width: 1920, height: 1080 });
 
-        // IMPORTANTE: Esperamos que la nueva pestaña cargue su "Home" inicial
-        // Si intentamos ir a "Artículos" demasiado rápido, Angular puede fallar.
-        await erpPage.waitForNavigation({ waitUntil: 'domcontentloaded' });
+        // --- CORRECCIÓN CRÍTICA AQUÍ ---
+        console.log('5. Pestaña detectada. Esperando estabilización (5 seg)...');
+        
+        // NO usamos waitForNavigation aquí porque Defontana hace muchos redirects internos
+        // y eso causa el error "Frame Detached".
+        // Simplemente esperamos 5 segundos a lo bruto para que el navegador se calme.
+        await new Promise(r => setTimeout(r, 5000));
 
-        // 3. NAVEGACIÓN DIRECTA (Aquí aplicamos tu corrección)
-        console.log('5. Pestaña lista. Saltando directo a Artículos...');
+        // 3. NAVEGACIÓN DIRECTA
+        console.log('6. Navegando a Artículos...');
         const urlInventario = 'https://erp.defontana.com/#/Inventario/Inventario/Articulos';
         
-        // Forzamos la URL
-        await erpPage.goto(urlInventario, { waitUntil: 'networkidle2' });
+        await erpPage.goto(urlInventario, { waitUntil: 'domcontentloaded' });
 
-        console.log('6. Módulo de Artículos cargado. Buscando input...');
+        console.log('7. Módulo Artículos cargado. Buscando input...');
 
         // 4. BÚSQUEDA DEL PRODUCTO
         const searchInputSelector = 'input[formcontrolname="searchInputText"]';
         
-        // Esperamos el input
         await erpPage.waitForSelector(searchInputSelector);
         
-        // Escribimos SKU y ENTER
-        // (Borramos primero por seguridad)
+        // Limpiar y escribir
         await erpPage.evaluate((sel) => document.querySelector(sel).value = "", searchInputSelector);
         await erpPage.type(searchInputSelector, skuLimpio);
         await erpPage.keyboard.press('Enter');
 
-        console.log(`7. Buscando SKU: ${skuLimpio}`);
+        console.log(`8. Buscando SKU: ${skuLimpio}`);
 
-        // 5. ESPERAR Y LEER RESULTADOS
-        // Esperamos a que la tabla cargue algo (damos 10s máximo)
+        // 5. ESPERAR RESULTADOS
+        // Esperamos un poco a que la tabla reaccione
         try {
-            await erpPage.waitForSelector('.mat-column-id', { timeout: 10000 });
+            await erpPage.waitForSelector('.mat-column-id', { timeout: 8000 });
         } catch (e) {
-            console.log('...No aparecieron resultados rápidos (posiblemente agotado)...');
+            console.log('...Tabla lenta o vacía...');
         }
 
         const resultado = await erpPage.evaluate((sku) => {
             const filas = document.querySelectorAll('tr.mat-row');
-            
-            // Si no hay filas, retornamos null
             if (filas.length === 0) return null;
 
             for (let fila of filas) {
                 const celdaCodigo = fila.querySelector('.mat-column-id');
                 const textoCodigo = celdaCodigo ? celdaCodigo.innerText.trim() : '';
 
-                // Verificamos si el código coincide (Exacto o Contenido)
                 if (textoCodigo === sku) {
                     const celdaDesc = fila.querySelector('.mat-column-description');
                     const celdaStock = fila.querySelector('.mat-column-stock');
@@ -142,7 +140,6 @@ app.get('/consultar', async (req, res) => {
             return null;
         }, skuLimpio);
 
-        // 6. RESPUESTA FINAL
         if (resultado) {
             res.json({ status: 'ok', mensaje: 'Producto encontrado', data: resultado });
         } else {
@@ -154,8 +151,8 @@ app.get('/consultar', async (req, res) => {
         }
 
     } catch (error) {
-        console.error('ERROR FATAL:', error);
-        res.status(500).json({ error: 'Error en el servidor', detalle: error.message });
+        console.error('ERROR:', error);
+        res.status(500).json({ error: 'Error interno', detalle: error.message });
     } finally {
         if (browser) await browser.close();
     }
