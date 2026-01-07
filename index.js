@@ -41,7 +41,7 @@ app.get('/consultar', async (req, res) => {
         
         // --- CORRECCIÓN 2: Usamos 'domcontentloaded' que es más rápido y falla menos ---
         console.log('Cargando página de login...');
-        await page.goto('https://gw.defontana.com/login', { waitUntil: 'domcontentloaded' });
+        await page.goto('https://portal.defontana.com/login', { waitUntil: 'domcontentloaded' });
 
         // Esperamos explícitamente al input de correo
         await page.waitForSelector('input[formcontrolname="email"]');
@@ -170,3 +170,4 @@ app.get('/consultar', async (req, res) => {
 app.listen(port, () => {
     console.log(`Servidor listo en puerto ${port}`);
 });
+
