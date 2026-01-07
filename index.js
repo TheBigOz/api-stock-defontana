@@ -33,97 +33,89 @@ app.get('/consultar', async (req, res) => {
 
         const page = await browser.newPage();
         
-        // --- CORRECCIÓN 1: Aumentamos la paciencia a 90 segundos (antes 30) ---
-        page.setDefaultNavigationTimeout(90000);
-        page.setDefaultTimeout(90000);
+        // TIEMPOS DE ESPERA LARGOS (Por seguridad en servidor gratis)
+        page.setDefaultNavigationTimeout(60000); // 60 segundos
+        page.setDefaultTimeout(60000);
 
         await page.setViewport({ width: 1920, height: 1080 });
         
-        // --- CORRECCIÓN 2: Usamos 'domcontentloaded' que es más rápido y falla menos ---
-        console.log('Cargando página de login...');
+        // 1. LOGIN (URL CORREGIDA: portal.defontana.com)
+        console.log('Entrando al Portal...');
         await page.goto('https://portal.defontana.com/login', { waitUntil: 'domcontentloaded' });
 
-        // Esperamos explícitamente al input de correo
+        // Esperamos que cargue el formulario
+        // Nota: Asumimos que los selectores de correo/pass son los mismos. 
+        // Si fallara aquí, tendríamos que revisar si en "portal" se llaman diferente.
         await page.waitForSelector('input[formcontrolname="email"]');
         
-        // Escribimos credenciales
         await page.type('input[formcontrolname="email"]', 'oz@microchip.cl'); 
         await page.type('input[formcontrolname="password"]', '@Emmet5264305!'); 
         
-        // Click y esperamos navegación
         console.log('Enviando credenciales...');
+        
+        // Click en entrar y esperamos
         await Promise.all([
             page.click('button.df-primario'),
-            // Esperamos solo a que el HTML cargue, no a que termine toda la red
-            page.waitForNavigation({ waitUntil: 'domcontentloaded' }) 
+            page.waitForNavigation({ waitUntil: 'domcontentloaded' })
         ]);
         
-        console.log('Login completado. Buscando botón ERP...');
+        console.log('Login OK. Buscando acceso al ERP...');
 
-        // 2. SALTAR A "ERP DIGITAL" (NUEVA PESTAÑA)
+        // 2. ABRIR EL ERP (Detectar nueva pestaña)
+        // Buscamos el botón/enlace que abre el ERP. Usualmente dice "ERP Digital" o es un ícono.
         const erpButtonSelector = "//h3[contains(text(), 'ERP Digital')]";
+        
+        // Esperamos a que el botón aparezca
         await page.waitForXPath(erpButtonSelector);
         const [erpButton] = await page.$x(erpButtonSelector);
         
-        // Preparamos la captura de la nueva pestaña
+        // Preparamos la captura de la nueva ventana que se abrirá
         const newTargetPromise = browser.waitForTarget(target => target.opener() === page.target());
         
+        // Click para abrir el ERP
         await erpButton.click();
-        console.log('Click en ERP Digital, esperando nueva pestaña...');
+        console.log('Abriendo ERP (Nueva pestaña)...');
         
         const newTarget = await newTargetPromise;
         const erpPage = await newTarget.page();
         
-        // --- Aplicamos la misma paciencia a la nueva pestaña ---
-        if (!erpPage) throw new Error("No se pudo abrir la pestaña del ERP");
-        erpPage.setDefaultNavigationTimeout(90000);
-        erpPage.setDefaultTimeout(90000);
-        
+        if (!erpPage) throw new Error("No se detectó la nueva pestaña del ERP");
+
+        // Configuramos la nueva pestaña
+        erpPage.setDefaultNavigationTimeout(60000);
+        erpPage.setDefaultTimeout(60000);
         await erpPage.setViewport({ width: 1920, height: 1080 });
-        // Esperamos a que la nueva pestaña cargue su contenido
+
+        // Esperamos un poco a que la nueva pestaña inicialice (cargue Angular)
         await erpPage.waitForNavigation({ waitUntil: 'domcontentloaded' });
-        
-        console.log('Pestaña ERP cargada. Navegando al menú...');
 
-        // 3. NAVEGACIÓN DIRECTA (Truco para saltar clics)
-        // Intentamos esperar a que el menú lateral exista antes de interactuar
-        const menuInventarioXpath = "//span[contains(@class, 'menu-title') and contains(text(), 'Inventario')]";
-        await erpPage.waitForXPath(menuInventarioXpath);
-        const [btnInventario] = await erpPage.$x(menuInventarioXpath);
+        // 3. NAVEGACIÓN DIRECTA (El truco maestro)
+        // En vez de clics, vamos directo a la URL de Artículos
+        console.log('Saltando directo a Artículos...');
+        const urlInventario = 'https://erp.defontana.com/#/Inventario/Inventario/Articulos';
         
-        // Usamos evaluate para hacer click click (más robusto en Angular)
-        await erpPage.evaluate(el => el.click(), btnInventario);
-        
-        // Espera breve
-        await new Promise(r => setTimeout(r, 1000));
+        // Forzamos la navegación en la pestaña del ERP
+        await erpPage.goto(urlInventario, { waitUntil: 'networkidle2' }); // Networkidle es mejor aquí para asegurar que cargue la tabla
 
-        const menuArticulosXpath = "//span[contains(@class, 'menu-title') and contains(text(), 'Artículos')]";
-        await erpPage.waitForXPath(menuArticulosXpath);
-        const [btnArticulos] = await erpPage.$x(menuArticulosXpath);
-        await erpPage.evaluate(el => el.click(), btnArticulos);
-
-        console.log('Entrando a Artículos...');
+        console.log('Módulo de Artículos cargado. Buscando...');
 
         // 4. BÚSQUEDA DEL PRODUCTO
         const searchInputSelector = 'input[formcontrolname="searchInputText"]';
+        
+        // Esperamos que aparezca el buscador
         await erpPage.waitForSelector(searchInputSelector);
         
-        // Borramos lo que haya y escribimos
-        await erpPage.evaluate((sel) => document.querySelector(sel).value = "", searchInputSelector);
+        // Escribimos y buscamos
         await erpPage.type(searchInputSelector, skuLimpio);
         await erpPage.keyboard.press('Enter');
 
-        console.log(`Buscando: ${skuLimpio}`);
-
-        // Esperamos resultados (damos tiempo extra por si Defontana es lento buscando)
-        // Esperamos a que aparezca la tabla o pasen 5 segundos
+        // 5. EXTRACCIÓN (Igual que antes)
         try {
-            await erpPage.waitForSelector('.mat-column-id', { timeout: 8000 });
+            await erpPage.waitForSelector('.mat-column-id', { timeout: 10000 });
         } catch (e) {
-            console.log('Esperando resultados...');
+            console.log('Tiempo de espera de tabla agotado (posiblemente sin resultados).');
         }
 
-        // 5. EXTRACCIÓN
         const resultado = await erpPage.evaluate((sku) => {
             const filas = document.querySelectorAll('tr.mat-row');
             if (filas.length === 0) return null;
@@ -132,7 +124,7 @@ app.get('/consultar', async (req, res) => {
                 const celdaCodigo = fila.querySelector('.mat-column-id');
                 const textoCodigo = celdaCodigo ? celdaCodigo.innerText.trim() : '';
 
-                // Comparación flexible (contiene) o exacta
+                // Usamos "includes" por si el SKU tiene variaciones, o "===" para exacto
                 if (textoCodigo === sku) {
                     const celdaDesc = fila.querySelector('.mat-column-description');
                     const celdaStock = fila.querySelector('.mat-column-stock');
@@ -160,7 +152,7 @@ app.get('/consultar', async (req, res) => {
         }
 
     } catch (error) {
-        console.error('ERROR EN SERVIDOR:', error);
+        console.error('ERROR:', error);
         res.status(500).json({ error: 'Error interno', detalle: error.message });
     } finally {
         if (browser) await browser.close();
@@ -170,4 +162,3 @@ app.get('/consultar', async (req, res) => {
 app.listen(port, () => {
     console.log(`Servidor listo en puerto ${port}`);
 });
-
