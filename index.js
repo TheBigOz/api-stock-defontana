@@ -21,7 +21,7 @@ app.get('/consultar', async (req, res) => {
     let browser = null;
     try {
         browser = await puppeteer.launch({
-            headless: true, 
+            headless: true,
             args: [
                 '--no-sandbox', 
                 '--disable-setuid-sandbox',
@@ -33,13 +33,13 @@ app.get('/consultar', async (req, res) => {
 
         const page = await browser.newPage();
         
-        // Tiempos de espera largos para evitar timeouts en servidor gratis
+        // Timeout muy generoso
         page.setDefaultNavigationTimeout(60000); 
         page.setDefaultTimeout(60000);
 
         await page.setViewport({ width: 1920, height: 1080 });
         
-        // 1. LOGIN (Portal)
+        // 1. LOGIN
         console.log('1. Entrando al Portal...');
         await page.goto('https://portal.defontana.com/login', { waitUntil: 'domcontentloaded' });
 
@@ -53,11 +53,10 @@ app.get('/consultar', async (req, res) => {
         
         await Promise.all([
             page.click('button.df-primario'),
-            // Esperamos que cargue la navegación básica
             page.waitForNavigation({ waitUntil: 'domcontentloaded' })
         ]);
         
-        console.log('3. Login OK. Esperando botón ERP...');
+        console.log('3. Login OK. Buscando enlace ERP...');
 
         // 2. ABRIR NUEVA PESTAÑA
         const erpButtonSelector = "//h3[contains(text(), 'ERP Digital')]";
@@ -66,52 +65,59 @@ app.get('/consultar', async (req, res) => {
         
         const newTargetPromise = browser.waitForTarget(target => target.opener() === page.target());
         
-        // Click que abre la pestaña
         await erpButton.click();
-        console.log('4. Click en ERP Digital. Abriendo pestaña...');
+        console.log('4. Click en ERP Digital. Esperando pestaña...');
         
         const newTarget = await newTargetPromise;
         const erpPage = await newTarget.page();
         
         if (!erpPage) throw new Error("No se pudo capturar la pestaña del ERP");
 
-        // Configuramos la nueva pestaña
+        // Configuración pestaña nueva
         erpPage.setDefaultNavigationTimeout(60000);
         erpPage.setDefaultTimeout(60000);
         await erpPage.setViewport({ width: 1920, height: 1080 });
 
-        // --- CORRECCIÓN CRÍTICA AQUÍ ---
-        console.log('5. Pestaña detectada. Esperando estabilización (5 seg)...');
+        console.log('5. Pestaña detectada. Esperando carga TOTAL del Dashboard...');
         
-        // NO usamos waitForNavigation aquí porque Defontana hace muchos redirects internos
-        // y eso causa el error "Frame Detached".
-        // Simplemente esperamos 5 segundos a lo bruto para que el navegador se calme.
-        await new Promise(r => setTimeout(r, 5000));
+        // --- CAMBIO CLAVE 1: Esperar a que el menú exista ---
+        // Esto confirma que Defontana terminó de hacer sus redirecciones locas.
+        // Buscamos cualquier elemento del menú lateral (ej: clase .menu-title)
+        try {
+            await erpPage.waitForSelector('.menu-title', { timeout: 20000 });
+        } catch (e) {
+            console.log('Advertencia: El menú tardó en aparecer, intentando continuar igual...');
+        }
 
-        // 3. NAVEGACIÓN DIRECTA
-        console.log('6. Navegando a Artículos...');
+        // --- CAMBIO CLAVE 2: Navegación por JS (No por goto) ---
+        console.log('6. Dashboard listo. Inyectando navegación a Artículos...');
+        
         const urlInventario = 'https://erp.defontana.com/#/Inventario/Inventario/Articulos';
         
-        await erpPage.goto(urlInventario, { waitUntil: 'domcontentloaded' });
+        // En lugar de "erpPage.goto" (que rompe el frame), usamos javascript puro
+        // para cambiar la URL desde adentro.
+        await erpPage.evaluate((url) => {
+            window.location.href = url;
+        }, urlInventario);
 
-        console.log('7. Módulo Artículos cargado. Buscando input...');
+        console.log('7. Navegación inyectada. Esperando input de búsqueda...');
 
-        // 4. BÚSQUEDA DEL PRODUCTO
+        // 3. BÚSQUEDA
         const searchInputSelector = 'input[formcontrolname="searchInputText"]';
         
+        // Esperamos que el cambio de URL surta efecto y aparezca el input
         await erpPage.waitForSelector(searchInputSelector);
         
-        // Limpiar y escribir
+        // Limpiamos y escribimos
         await erpPage.evaluate((sel) => document.querySelector(sel).value = "", searchInputSelector);
         await erpPage.type(searchInputSelector, skuLimpio);
         await erpPage.keyboard.press('Enter');
 
         console.log(`8. Buscando SKU: ${skuLimpio}`);
 
-        // 5. ESPERAR RESULTADOS
-        // Esperamos un poco a que la tabla reaccione
+        // 4. RESULTADOS
         try {
-            await erpPage.waitForSelector('.mat-column-id', { timeout: 8000 });
+            await erpPage.waitForSelector('.mat-column-id', { timeout: 10000 });
         } catch (e) {
             console.log('...Tabla lenta o vacía...');
         }
@@ -151,7 +157,7 @@ app.get('/consultar', async (req, res) => {
         }
 
     } catch (error) {
-        console.error('ERROR:', error);
+        console.error('ERROR FATAL:', error);
         res.status(500).json({ error: 'Error interno', detalle: error.message });
     } finally {
         if (browser) await browser.close();
