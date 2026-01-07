@@ -1,4 +1,3 @@
-
 const express = require('express');
 const puppeteer = require('puppeteer');
 const app = express();
@@ -42,7 +41,8 @@ app.get('/consultar', async (req, res) => {
         await page.goto('https://portal.defontana.com/login', { waitUntil: 'domcontentloaded' });
 
         await page.waitForSelector('input[formcontrolname="email"]');
- // CREDENCIALES
+        
+// CREDENCIALES
         await page.type('input[formcontrolname="email"]', 'oz@microchip.cl'); 
         await page.type('input[formcontrolname="password"]', '@Emmet5264305!'); 
 
@@ -58,99 +58,92 @@ app.get('/consultar', async (req, res) => {
         await page.waitForXPath(erpButtonSelector);
         const [erpButton] = await page.$x(erpButtonSelector);
         
-        const newTargetPromise = browser.waitForTarget(target => target.opener() === page.target());
+        // Abrimos la pestaña
         await erpButton.click();
         
-        const newTarget = await newTargetPromise;
-        const erpPage = await newTarget.page();
-        
-        if (!erpPage) throw new Error("No se pudo capturar la pestaña del ERP");
+        // Esperamos un poco para asegurarnos que la pestaña se creó
+        await new Promise(r => setTimeout(r, 5000));
+
+        // 3. RECUPERACIÓN DE LA PESTAÑA (EL TRUCO NUEVO)
+        // En lugar de usar la referencia 'target', pedimos al navegador todas las pestañas abiertas.
+        // La última de la lista SIEMPRE es la nueva que se acaba de abrir.
+        const pages = await browser.pages();
+        const erpPage = pages[pages.length - 1]; // Tomamos la última pestaña (la del ERP)
+
+        if (!erpPage) throw new Error("No se pudo detectar la pestaña del ERP");
 
         erpPage.setDefaultNavigationTimeout(60000);
         erpPage.setDefaultTimeout(60000);
         await erpPage.setViewport({ width: 1920, height: 1080 });
 
-        // 3. ESTABILIZACIÓN (La clave del éxito)
-        console.log('3. Pestaña detectada. ESPERANDO 15 SEGUNDOS...');
+        console.log('3. Pestaña capturada (Refrescada). ESPERANDO 15 SEGUNDOS...');
+        // Dejamos que cargue tranquila
         await new Promise(r => setTimeout(r, 15000));
 
-        // 4. NAVEGACIÓN POR MENÚ (Clics)
+        // 4. NAVEGACIÓN POR CLICS (Con la referencia fresca)
         console.log('4. Tiempo cumplido. Buscando menú Inventario...');
         
-        // Buscamos el botón Inventario
+        // Usamos XPath que es más seguro para texto
         const xpathInventario = "//span[contains(text(), 'Inventario')]";
         try {
             await erpPage.waitForXPath(xpathInventario, { visible: true, timeout: 10000 });
             const [btnInventario] = await erpPage.$x(xpathInventario);
-            await erpPage.evaluate(el => el.click(), btnInventario); // Clic JS
+            // Clic JS
+            await erpPage.evaluate(el => el.click(), btnInventario);
             console.log('   > Clic en Inventario OK');
         } catch (e) {
-            console.log('   > Error buscando botón Inventario (¿Ya estaba abierto o URL cambió?)');
+            console.log('   > No encontré botón Inventario (¿Quizás ya estaba desplegado?)');
         }
 
         await new Promise(r => setTimeout(r, 1000));
 
-        // Buscamos el botón Artículos
         console.log('5. Buscando submenú Artículos...');
         const xpathArticulos = "//span[contains(text(), 'Artículos')]";
         await erpPage.waitForXPath(xpathArticulos, { visible: true });
         const [btnArticulos] = await erpPage.$x(xpathArticulos);
-        await erpPage.evaluate(el => el.click(), btnArticulos); // Clic JS
+        await erpPage.evaluate(el => el.click(), btnArticulos);
 
-        console.log('6. Esperando carga del módulo (5 seg)...');
+        console.log('6. Esperando módulo de Artículos (5 seg)...');
         await new Promise(r => setTimeout(r, 5000));
 
-        // 5. BÚSQUEDA DEL INPUT (ESCANER MULTI-FRAME)
-        console.log('7. Buscando el INPUT (Escaneando frames)...');
+        // 5. BÚSQUEDA DEL INPUT (Escaneo de seguridad)
+        console.log('7. Buscando el INPUT...');
         
+        // Probamos buscar en la página principal primero
         let targetFrame = erpPage;
-        // Selectores posibles (Probamos varios por seguridad)
-        const searchSelectors = [
-            'input[formcontrolname="searchInputText"]',
-            'input[placeholder*="descripción"]', 
-            'input[placeholder*="Articulo"]'
-        ];
+        const searchInputSelector = 'input[formcontrolname="searchInputText"]';
         
-        let foundSelector = null;
-
-        // Función auxiliar para buscar en un frame
-        async function findSelectorInFrame(frame) {
-            for (const sel of searchSelectors) {
-                if (await frame.$(sel) !== null) return sel;
-            }
-            return null;
+        // Verificamos si está en un iframe (Común en ERPs)
+        const frame = erpPage.frames().find(f => f.name().includes('frame') || f.url().includes('Articulos'));
+        if (frame) {
+            console.log('   > Detectado posible iframe de contenido.');
+            targetFrame = frame;
         }
 
-        // A) Buscar en Principal
-        foundSelector = await findSelectorInFrame(erpPage);
-
-        // B) Buscar en Iframes (si no está en principal)
-        if (!foundSelector) {
-            for (const frame of erpPage.frames()) {
-                const s = await findSelectorInFrame(frame);
-                if (s) {
-                    targetFrame = frame;
-                    foundSelector = s;
-                    console.log(`   > ¡Encontrado en un Iframe!`);
-                    break;
-                }
-            }
+        // Esperamos el selector
+        try {
+            await targetFrame.waitForSelector(searchInputSelector, { timeout: 10000 });
+        } catch(e) {
+            // Último intento: buscar por placeholder
+            console.log('   > Selector primario falló. Probando placeholder...');
         }
 
-        if (!foundSelector) {
-            const urlFinal = erpPage.url();
-            throw new Error(`No se encontró el input de búsqueda. URL final: ${urlFinal}`);
-        }
+        // Escribimos (usando una estrategia genérica si el selector falló)
+        // Buscamos cualquier input que parezca de búsqueda
+        const inputHandle = await targetFrame.$('input[formcontrolname="searchInputText"]') || 
+                            await targetFrame.$('input[placeholder*="descripción"]');
 
-        console.log(`8. Input detectado (${foundSelector}). Escribiendo...`);
+        if (!inputHandle) throw new Error("No se pudo encontrar ningún campo de búsqueda.");
+
+        console.log(`8. Input encontrado. Escribiendo SKU: ${skuLimpio}`);
         
-        // Escribir en el frame correcto
-        await targetFrame.evaluate((sel) => { document.querySelector(sel).value = ""; }, foundSelector);
-        await targetFrame.type(foundSelector, skuLimpio);
-        await targetFrame.keyboard.press('Enter');
+        // Limpieza y escritura segura
+        await inputHandle.click({ clickCount: 3 });
+        await inputHandle.type(skuLimpio);
+        await inputHandle.press('Enter');
 
         // 6. RESULTADOS
-        console.log('9. Esperando resultados...');
+        console.log('9. Esperando tabla...');
         try {
             await targetFrame.waitForSelector('.mat-column-id', { timeout: 15000 });
         } catch (e) {
