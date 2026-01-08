@@ -3,25 +3,25 @@ const puppeteer = require('puppeteer');
 const app = express();
 const port = process.env.PORT || 3000;
 
+// VARIABLES GLOBALES (El estado del Robot)
+let globalBrowser = null;
+let targetFrame = null; // Aquí guardaremos el iframe listo para buscar
+let erpPage = null;     // La página principal
+let robotOcupado = false; // Semáforo para que no se crucen búsquedas
+
 app.use((req, res, next) => {
     res.header('Access-Control-Allow-Origin', '*');
     next();
 });
 
-app.get('/consultar', async (req, res) => {
-    const skuBuscado = req.query.sku;
-
-    if (!skuBuscado) {
-        return res.status(400).json({ error: 'Falta el parámetro SKU' });
-    }
-
-    const skuLimpio = skuBuscado.trim().toUpperCase();
-    console.log(`--- Iniciando búsqueda para: ${skuLimpio} ---`);
-
-    let browser = null;
+// --- FUNCIÓN DE INICIO (ARRANCA EL MOTOR) ---
+async function iniciarRobot() {
+    console.log('🤖 INICIANDO ROBOT (Login y Preparación)...');
     try {
-        browser = await puppeteer.launch({
-            headless: true, 
+        if (globalBrowser) await globalBrowser.close();
+
+        globalBrowser = await puppeteer.launch({
+            headless: true, // Modo servidor
             args: [
                 '--no-sandbox', 
                 '--disable-setuid-sandbox',
@@ -32,183 +32,209 @@ app.get('/consultar', async (req, res) => {
             ]
         });
 
-        const page = await browser.newPage();
-        page.setDefaultNavigationTimeout(60000); 
+        const page = await globalBrowser.newPage();
+        page.setDefaultNavigationTimeout(60000);
         page.setDefaultTimeout(60000);
         await page.setViewport({ width: 1920, height: 1080 });
-        
-        // 1. LOGIN
-        console.log('1. Entrando al Portal...');
-        await page.goto('https://portal.defontana.com/login', { waitUntil: 'domcontentloaded' });
 
+        // 1. LOGIN
+        console.log('   > Entrando al login...');
+        await page.goto('https://portal.defontana.com/login', { waitUntil: 'domcontentloaded' });
+        
         await page.waitForSelector('input[formcontrolname="email"]');
-                // CREDENCIALES
+         // CREDENCIALES
         await page.type('input[formcontrolname="email"]', 'oz@microchip.cl'); 
         await page.type('input[formcontrolname="password"]', '@Emmet5264305!'); 
-
+        
         await Promise.all([
             page.click('button.df-primario'),
             page.waitForNavigation({ waitUntil: 'domcontentloaded' })
         ]);
-        
-        console.log('2. Login OK. Abriendo ERP...');
 
-        // 2. ABRIR PESTAÑA ERP
+        // 2. ABRIR ERP
+        console.log('   > Abriendo ERP...');
         const erpButtonSelector = "//h3[contains(text(), 'ERP Digital')]";
         await page.waitForXPath(erpButtonSelector);
         const [erpButton] = await page.$x(erpButtonSelector);
         
         await erpButton.click();
-        // Espera técnica para que el navegador abra la pestaña
-        await new Promise(r => setTimeout(r, 5000)); 
+        await new Promise(r => setTimeout(r, 5000)); // Esperar nueva pestaña
 
-        // 3. RECUPERAR PESTAÑA
-        const pages = await browser.pages();
-        const erpPage = pages[pages.length - 1]; 
-
-        if (!erpPage) throw new Error("No se pudo detectar la pestaña del ERP");
-
+        // 3. CAPTURAR PESTAÑA
+        const pages = await globalBrowser.pages();
+        erpPage = pages[pages.length - 1]; // Guardamos en variable global
+        
+        if (!erpPage) throw new Error("No se detectó pestaña ERP");
+        
+        // Configuraciones globales
         erpPage.setDefaultNavigationTimeout(60000);
         erpPage.setDefaultTimeout(60000);
         await erpPage.setViewport({ width: 1920, height: 1080 });
 
-        // --- AJUSTE DE TIEMPO AQUÍ ---
-        // 2 segundos es muy poco. 12 segundos es seguro para Render Free.
-        console.log('3. Pestaña capturada. ESPERANDO 12 SEGUNDOS (Carga segura)...');
+        console.log('   > Esperando carga inicial (12s)...');
         await new Promise(r => setTimeout(r, 12000));
 
-        // 4. NAVEGACIÓN
-        console.log('4. Buscando menú Inventario...');
+        // 4. NAVEGAR A INVENTARIO
+        console.log('   > Navegando al menú...');
         const xpathInventario = "//span[contains(text(), 'Inventario')]";
         try {
-            // Esperamos explícitamente a que el botón sea VISIBLE
             await erpPage.waitForXPath(xpathInventario, { visible: true, timeout: 5000 });
             const [btnInv] = await erpPage.$x(xpathInventario);
             await erpPage.evaluate(el => el.click(), btnInv);
-        } catch(e) { 
-            console.log('   (Inventario quizás ya estaba abierto o tardó en cargar)'); 
-        }
+            await new Promise(r => setTimeout(r, 1000));
+        } catch(e) { console.log('   (Menú quizás ya abierto)'); }
 
-        // Espera para la animación del menú desplegable
-        await new Promise(r => setTimeout(r, 1500));
-
-        console.log('5. Clickeando Artículos...');
         const xpathArticulos = "//span[contains(text(), 'Artículos')]";
-        // Si falló arriba, aquí esperamos un poco más por si acaso
-        await erpPage.waitForXPath(xpathArticulos, { visible: true, timeout: 10000 });
+        await erpPage.waitForXPath(xpathArticulos, { visible: true });
         const [btnArt] = await erpPage.$x(xpathArticulos);
         await erpPage.evaluate(el => el.click(), btnArt);
 
-        console.log('6. Esperando carga de módulo (10 seg)...');
-        await new Promise(r => setTimeout(r, 10000)); 
+        console.log('   > Cargando módulo Artículos (10s)...');
+        await new Promise(r => setTimeout(r, 10000));
 
-        // 5. BÚSQUEDA DEL INPUT (Sabueso)
-        console.log('7. Escaneando frames...');
-        
-        let targetFrame = null;
-        let foundSelector = null;
-        const selectorPrincipal = 'input[formcontrolname="searchInputText"]';
-        
+        // 5. LOCALIZAR EL IFRAME (Una sola vez)
+        console.log('   > Localizando iframe de búsqueda...');
         const allFrames = erpPage.frames();
+        targetFrame = null;
 
         for (const frame of allFrames) {
-            if (await frame.$(selectorPrincipal)) {
-                console.log(`   > ¡EUREKA! Input encontrado en frame: ${frame.url()}`);
+            const existe = await frame.$('input[formcontrolname="searchInputText"]');
+            if (existe) {
                 targetFrame = frame;
-                foundSelector = selectorPrincipal;
+                console.log(`✅ ROBOT LISTO EN: ${frame.url()}`);
                 break;
             }
         }
 
         if (!targetFrame) {
+            // Backup search
             for (const frame of allFrames) {
                 if (await frame.$('input[placeholder*="escripción"]')) {
                     targetFrame = frame;
-                    foundSelector = 'input[placeholder*="escripción"]';
+                    console.log(`✅ ROBOT LISTO (Backup) EN: ${frame.url()}`);
                     break;
                 }
             }
         }
 
-        if (!targetFrame) throw new Error("No se encontró el input.");
+        if (!targetFrame) throw new Error("No se encontró el iframe de búsqueda");
 
-        // ACCIÓN: Escribir SKU (MÉTODO TECLADO HUMANO)
-        console.log(`8. Escribiendo SKU: ${skuLimpio}`);
+        // Robot listo para recibir órdenes
+        return true;
+
+    } catch (error) {
+        console.error('❌ Error iniciando robot:', error);
+        if (globalBrowser) await globalBrowser.close();
+        globalBrowser = null;
+        targetFrame = null;
+        return false;
+    }
+}
+
+// INICIAR AL ARRANCAR EL SERVIDOR
+iniciarRobot();
+
+// --- ENDPOINT DE CONSULTA RÁPIDA ---
+app.get('/consultar', async (req, res) => {
+    const skuBuscado = req.query.sku;
+    if (!skuBuscado) return res.status(400).json({ error: 'Falta SKU' });
+    
+    // Verificamos si el robot está vivo
+    if (!globalBrowser || !targetFrame) {
+        // Intentamos revivirlo
+        const revivido = await iniciarRobot();
+        if (!revivido) {
+            return res.status(503).json({ error: 'El sistema se está reiniciando, intenta en 1 minuto.' });
+        }
+    }
+
+    // Evitar conflictos si dos personas buscan a la vez
+    if (robotOcupado) {
+        return res.status(429).json({ error: 'Sistema ocupado, intenta en 2 segundos.' });
+    }
+
+    robotOcupado = true;
+    const skuLimpio = skuBuscado.trim().toUpperCase();
+    console.log(`⚡ Búsqueda Rápida: ${skuLimpio}`);
+
+    try {
+        // Selector guardado
+        const selector = 'input[formcontrolname="searchInputText"]'; 
+        // Si fallara, habría que re-detectar, pero asumimos que el iframe no cambia ID
         
-        await targetFrame.click(foundSelector);
-        await new Promise(r => setTimeout(r, 500));
-
-        // Borrar todo (Ctrl + A -> Backspace)
-        await erpPage.keyboard.down('Control');
-        await erpPage.keyboard.press('A');
-        await erpPage.keyboard.up('Control');
+        // 1. Limpieza y Escritura (MÉTODO ULTRA RÁPIDO)
+        await targetFrame.click(selector, { clickCount: 3 });
+        await new Promise(r => setTimeout(r, 100)); // Pequeña pausa
         await erpPage.keyboard.press('Backspace');
-
-        // Escribir letra por letra
-        await targetFrame.type(foundSelector, skuLimpio, { delay: 100 });
-        await new Promise(r => setTimeout(r, 500));
-
-        console.log('   > Texto ingresado. Presionando Enter...');
+        
+        await targetFrame.type(selector, skuLimpio, { delay: 50 }); // Escribimos más rápido ahora
         await erpPage.keyboard.press('Enter');
 
-        // 6. RESULTADOS
-        console.log('9. Esperando resultados...');
-        
-        await new Promise(r => setTimeout(r, 4000));
+        // 2. Esperar Resultados (Tiempo corto porque ya está cargado)
+        try {
+            await targetFrame.waitForSelector('.mat-column-id', { timeout: 5000 });
+        } catch(e) { /* Si no aparece, asumimos vacío */ }
 
+        // 3. Extracción
         const resultado = await targetFrame.evaluate((sku) => {
             const filas = document.querySelectorAll('tr.mat-row');
-            const debugInfo = [];
-            
             for (let fila of filas) {
                 const celdaCodigo = fila.querySelector('.mat-column-id');
                 const textoCodigo = celdaCodigo ? celdaCodigo.innerText.trim() : '';
-                
-                debugInfo.push(textoCodigo);
 
                 if (textoCodigo.includes(sku)) {
                     const celdaDesc = fila.querySelector('.mat-column-description');
                     const celdaStock = fila.querySelector('.mat-column-stock');
                     const celdaPrecio = fila.querySelector('.mat-column-salePrice');
-
                     return {
                         found: true,
                         data: {
                             codigo: textoCodigo,
-                            descripcion: celdaDesc ? celdaDesc.innerText.trim() : 'Sin descripción',
+                            descripcion: celdaDesc ? celdaDesc.innerText.trim() : '',
                             stock: celdaStock ? celdaStock.innerText.trim() : '0',
                             precio: celdaPrecio ? celdaPrecio.innerText.trim() : '0'
                         }
                     };
                 }
             }
-            return { found: false, count: filas.length, seen: debugInfo };
+            return { found: false };
         }, skuLimpio);
 
-        console.log('Resultado obtenido:', resultado);
+        robotOcupado = false;
 
         if (resultado.found) {
-            res.json({ status: 'ok', mensaje: 'Producto encontrado', data: resultado.data });
+            res.json({ status: 'ok', mensaje: 'Encontrado', data: resultado.data });
         } else {
-            res.json({
-                status: 'ok',
-                mensaje: 'Agotado o No encontrado',
-                debug: {
-                    filas_encontradas: resultado.count,
-                    codigos_vistos: resultado.seen
-                },
-                data: { codigo: skuLimpio, stock: '0', precio: '-' }
-            });
+            res.json({ status: 'ok', mensaje: 'No encontrado', data: { codigo: skuLimpio, stock: '0', precio: '-' } });
         }
 
     } catch (error) {
-        console.error('ERROR FATAL:', error);
-        res.status(500).json({ error: 'Error interno', detalle: error.message });
-    } finally {
-        if (browser) await browser.close();
+        console.error('Error en búsqueda rápida:', error);
+        robotOcupado = false;
+        
+        // Si hay error crítico (ej: navegador cerrado), reseteamos variables para que se reinicie en la prox
+        if (error.message.includes('Session closed') || error.message.includes('Target closed')) {
+            targetFrame = null;
+            globalBrowser = null;
+        }
+        res.status(500).json({ error: 'Error de conexión', detalle: error.message });
     }
 });
 
+// --- MANTENER VIVO EL SISTEMA (Ping cada 5 min) ---
+setInterval(async () => {
+    if (targetFrame && erpPage) {
+        console.log('💓 Heartbeat: Manteniendo sesión activa...');
+        try {
+            // Hacemos un click "fantasma" en el título para que no nos desconecte por inactividad
+            await erpPage.click('body');
+        } catch (e) {
+            console.log('⚠️ Sesión perdida, se reiniciará en la próxima consulta.');
+            targetFrame = null;
+        }
+    }
+}, 300000); // 5 minutos
+
 app.listen(port, () => {
-    console.log(`Servidor listo en puerto ${port}`);
+    console.log(`🚀 Servidor Ultra-Rápido listo en puerto ${port}`);
 });
