@@ -20,8 +20,9 @@ app.get('/consultar', async (req, res) => {
 
     let browser = null;
     try {
+        // Actualizado a headless: "new" para evitar el warning
         browser = await puppeteer.launch({
-            headless: true,
+            headless: "new",
             args: [
                 '--no-sandbox', 
                 '--disable-setuid-sandbox',
@@ -41,7 +42,7 @@ app.get('/consultar', async (req, res) => {
         await page.goto('https://portal.defontana.com/login', { waitUntil: 'domcontentloaded' });
 
         await page.waitForSelector('input[formcontrolname="email"]');
-        // CREDENCIALES
+                // CREDENCIALES
         await page.type('input[formcontrolname="email"]', 'oz@microchip.cl'); 
         await page.type('input[formcontrolname="password"]', '@Emmet5264305!'); 
 
@@ -112,7 +113,7 @@ app.get('/consultar', async (req, res) => {
         }
 
         if (!targetFrame) {
-            console.log('   > Buscando por placeholder...');
+            // Backup por si acaso
             for (const frame of allFrames) {
                 if (await frame.$('input[placeholder*="escripción"]')) {
                     targetFrame = frame;
@@ -124,51 +125,52 @@ app.get('/consultar', async (req, res) => {
 
         if (!targetFrame) throw new Error("No se encontró el input.");
 
-        // ACCIÓN: Escribir SKU con FIX DE ANGULAR
-        console.log(`8. Escribiendo SKU: ${skuLimpio}`);
+        // ACCIÓN: Escribir SKU con TÉCNICA HUMANA PARA ANGULAR
+        console.log(`8. Escribiendo SKU: ${skuLimpio} (Modo Humano)`);
         
-        await targetFrame.click(foundSelector); 
+        // A) Foco y Limpieza real (Triple clic + Backspace)
+        await targetFrame.click(foundSelector, { clickCount: 3 });
+        await erpPage.keyboard.press('Backspace');
         await new Promise(r => setTimeout(r, 500));
 
-        // BORRAR Y ESCRIBIR
-        await targetFrame.evaluate((sel) => { document.querySelector(sel).value = ''; }, foundSelector);
-        await targetFrame.type(foundSelector, skuLimpio, { delay: 100 }); // Escribir despacio
+        // B) Escribir muy despacio para que Angular detecte cada tecla
+        await targetFrame.type(foundSelector, skuLimpio, { delay: 150 });
+        await new Promise(r => setTimeout(r, 500));
 
-        // --- FIX ANGULAR: Disparar evento de input manualmente ---
-        // Esto le avisa a la página que el texto cambió, por si el type() no fue detectado
+        // C) Forzar evento de actualización (Input + Change)
         await targetFrame.evaluate((sel) => {
             const input = document.querySelector(sel);
             input.dispatchEvent(new Event('input', { bubbles: true }));
             input.dispatchEvent(new Event('change', { bubbles: true }));
+            input.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter' })); // Simular evento de tecla
         }, foundSelector);
 
-        console.log('   > Eventos de input disparados. Presionando Enter...');
+        // D) BLUR (Salir del campo) - Importante para Angular Material
+        // Hacemos clic en el body o título para quitar el foco
+        await targetFrame.click('body'); 
+        
+        // E) Presionar Enter (Teclado Global)
+        console.log('   > Texto ingresado. Presionando Enter...');
         await erpPage.keyboard.press('Enter');
 
         // 6. RESULTADOS
-        console.log('9. Esperando resultados (Debug activado)...');
+        console.log('9. Esperando filtro de tabla...');
         
-        // Espera extendida para carga de tabla
-        try {
-            await targetFrame.waitForSelector('.mat-column-id', { timeout: 15000 });
-        } catch (e) {
-            console.log('...Timeout esperando selector de tabla...');
-        }
+        // Esperamos un poco para que la tabla se refresque
+        await new Promise(r => setTimeout(r, 3000));
 
-        // Extracción con MODO DEBUG
+        // Extracción
         const resultado = await targetFrame.evaluate((sku) => {
             const filas = document.querySelectorAll('tr.mat-row');
-            
-            // Recopilamos datos de depuración
             const debugInfo = [];
             
             for (let fila of filas) {
                 const celdaCodigo = fila.querySelector('.mat-column-id');
                 const textoCodigo = celdaCodigo ? celdaCodigo.innerText.trim() : '';
                 
-                // Guardamos lo que vemos para saber qué está pasando
                 debugInfo.push(textoCodigo);
 
+                // Comparamos
                 if (textoCodigo === sku) {
                     const celdaDesc = fila.querySelector('.mat-column-description');
                     const celdaStock = fila.querySelector('.mat-column-stock');
@@ -185,8 +187,6 @@ app.get('/consultar', async (req, res) => {
                     };
                 }
             }
-            
-            // Si no encontramos match, devolvemos la info de debug
             return { found: false, count: filas.length, seen: debugInfo };
         }, skuLimpio);
 
@@ -195,7 +195,6 @@ app.get('/consultar', async (req, res) => {
         if (resultado.found) {
             res.json({ status: 'ok', mensaje: 'Producto encontrado', data: resultado.data });
         } else {
-            // Devolvemos el debug al frontend para que veas qué pasó
             res.json({
                 status: 'ok',
                 mensaje: 'Agotado o No encontrado',
