@@ -61,7 +61,7 @@ app.get('/consultar', async (req, res) => {
         const [erpButton] = await page.$x(erpButtonSelector);
         
         await erpButton.click();
-        await new Promise(r => setTimeout(r, 3000)); 
+        await new Promise(r => setTimeout(r, 1000)); 
 
         // 3. RECUPERAR PESTAÑA
         const pages = await browser.pages();
@@ -73,8 +73,8 @@ app.get('/consultar', async (req, res) => {
         erpPage.setDefaultTimeout(60000);
         await erpPage.setViewport({ width: 1920, height: 1080 });
 
-        console.log('3. Pestaña capturada. ESPERANDO 5 SEGUNDOS...');
-        await new Promise(r => setTimeout(r, 5000));
+        console.log('3. Pestaña capturada. ESPERANDO 2 SEGUNDOS...');
+        await new Promise(r => setTimeout(r, 2000));
 
         // 4. NAVEGACIÓN
         console.log('4. Buscando menú Inventario...');
@@ -85,7 +85,7 @@ app.get('/consultar', async (req, res) => {
             await erpPage.evaluate(el => el.click(), btnInv);
         } catch(e) { console.log('   (Inventario quizás ya estaba abierto)'); }
 
-        await new Promise(r => setTimeout(r, 1000));
+        await new Promise(r => setTimeout(r, 500));
 
         console.log('5. Clickeando Artículos...');
         const xpathArticulos = "//span[contains(text(), 'Artículos')]";
@@ -93,8 +93,8 @@ app.get('/consultar', async (req, res) => {
         const [btnArt] = await erpPage.$x(xpathArticulos);
         await erpPage.evaluate(el => el.click(), btnArt);
 
-        console.log('6. Esperando carga de módulo (5 seg)...');
-        await new Promise(r => setTimeout(r, 5000)); 
+        console.log('6. Esperando carga de módulo (2 seg)...');
+        await new Promise(r => setTimeout(r, 2000)); 
 
         // 5. BÚSQUEDA DEL INPUT
         console.log('7. Escaneando frames...');
@@ -155,7 +155,7 @@ app.get('/consultar', async (req, res) => {
         console.log('9. Esperando resultados...');
         
         // Damos tiempo a la tabla para refrescarse
-        await new Promise(r => setTimeout(r, 4000));
+        await new Promise(r => setTimeout(r, 3000));
 
         // Extracción
         const resultado = await targetFrame.evaluate((sku) => {
@@ -215,4 +215,5 @@ app.get('/consultar', async (req, res) => {
 app.listen(port, () => {
     console.log(`Servidor listo en puerto ${port}`);
 });
+
 
