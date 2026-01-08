@@ -58,9 +58,9 @@ app.get('/consultar', async (req, res) => {
         const [erpButton] = await page.$x(erpButtonSelector);
         
         await erpButton.click();
-        await new Promise(r => setTimeout(r, 5000)); // Espera creación pestaña
+        await new Promise(r => setTimeout(r, 5000)); 
 
-        // 3. RECUPERAR PESTAÑA (Refresh)
+        // 3. RECUPERAR PESTAÑA
         const pages = await browser.pages();
         const erpPage = pages[pages.length - 1]; 
 
@@ -93,19 +93,17 @@ app.get('/consultar', async (req, res) => {
         console.log('6. Esperando carga de módulo (10 seg)...');
         await new Promise(r => setTimeout(r, 10000)); 
 
-        // 5. BÚSQUEDA DEL INPUT (MODO SABUESO)
-        console.log('7. Escaneando TODOS los frames buscando el input...');
+        // 5. BÚSQUEDA DEL INPUT
+        console.log('7. Escaneando frames...');
         
         let targetFrame = null;
         let foundSelector = null;
         const selectorPrincipal = 'input[formcontrolname="searchInputText"]';
         
         const allFrames = erpPage.frames();
-        console.log(`   > Se encontraron ${allFrames.length} marcos/frames.`);
 
         for (const frame of allFrames) {
-            const existe = await frame.$(selectorPrincipal);
-            if (existe) {
+            if (await frame.$(selectorPrincipal)) {
                 console.log(`   > ¡EUREKA! Input encontrado en frame: ${frame.url()}`);
                 targetFrame = frame;
                 foundSelector = selectorPrincipal;
@@ -114,11 +112,9 @@ app.get('/consultar', async (req, res) => {
         }
 
         if (!targetFrame) {
-            console.log('   > Selector exacto falló. Buscando por placeholder...');
+            console.log('   > Buscando por placeholder...');
             for (const frame of allFrames) {
-                const existe = await frame.$('input[placeholder*="escripción"]'); 
-                if (existe) {
-                    console.log(`   > Encontrado por placeholder en frame: ${frame.url()}`);
+                if (await frame.$('input[placeholder*="escripción"]')) {
                     targetFrame = frame;
                     foundSelector = 'input[placeholder*="escripción"]';
                     break;
@@ -126,41 +122,52 @@ app.get('/consultar', async (req, res) => {
             }
         }
 
-        if (!targetFrame) {
-            throw new Error(`No se encontró el input en ninguno de los ${allFrames.length} frames.`);
-        }
+        if (!targetFrame) throw new Error("No se encontró el input.");
 
-        // ACCIÓN: Escribir SKU
-        console.log(`8. Escribiendo SKU en el frame correcto...`);
+        // ACCIÓN: Escribir SKU con FIX DE ANGULAR
+        console.log(`8. Escribiendo SKU: ${skuLimpio}`);
         
-        // 1. Hacemos click para asegurar el FOCO dentro del iframe
         await targetFrame.click(foundSelector); 
         await new Promise(r => setTimeout(r, 500));
 
-        // 2. Borramos y escribimos (Usando el frame)
+        // BORRAR Y ESCRIBIR
         await targetFrame.evaluate((sel) => { document.querySelector(sel).value = ''; }, foundSelector);
-        await targetFrame.type(foundSelector, skuLimpio);
-        
-        // 3. ENTER (CORREGIDO: Usamos erpPage.keyboard, no targetFrame.keyboard)
-        // El foco ya está en el input, así que el teclado global funcionará.
+        await targetFrame.type(foundSelector, skuLimpio, { delay: 100 }); // Escribir despacio
+
+        // --- FIX ANGULAR: Disparar evento de input manualmente ---
+        // Esto le avisa a la página que el texto cambió, por si el type() no fue detectado
+        await targetFrame.evaluate((sel) => {
+            const input = document.querySelector(sel);
+            input.dispatchEvent(new Event('input', { bubbles: true }));
+            input.dispatchEvent(new Event('change', { bubbles: true }));
+        }, foundSelector);
+
+        console.log('   > Eventos de input disparados. Presionando Enter...');
         await erpPage.keyboard.press('Enter');
 
         // 6. RESULTADOS
-        console.log('9. Esperando resultados...');
+        console.log('9. Esperando resultados (Debug activado)...');
+        
+        // Espera extendida para carga de tabla
         try {
-            // Buscamos la tabla DENTRO del mismo frame donde estaba el input
             await targetFrame.waitForSelector('.mat-column-id', { timeout: 15000 });
         } catch (e) {
-            console.log('...Tabla lenta o vacía...');
+            console.log('...Timeout esperando selector de tabla...');
         }
 
+        // Extracción con MODO DEBUG
         const resultado = await targetFrame.evaluate((sku) => {
             const filas = document.querySelectorAll('tr.mat-row');
-            if (filas.length === 0) return null;
-
+            
+            // Recopilamos datos de depuración
+            const debugInfo = [];
+            
             for (let fila of filas) {
                 const celdaCodigo = fila.querySelector('.mat-column-id');
                 const textoCodigo = celdaCodigo ? celdaCodigo.innerText.trim() : '';
+                
+                // Guardamos lo que vemos para saber qué está pasando
+                debugInfo.push(textoCodigo);
 
                 if (textoCodigo === sku) {
                     const celdaDesc = fila.querySelector('.mat-column-description');
@@ -168,22 +175,34 @@ app.get('/consultar', async (req, res) => {
                     const celdaPrecio = fila.querySelector('.mat-column-salePrice');
 
                     return {
-                        codigo: textoCodigo,
-                        descripcion: celdaDesc ? celdaDesc.innerText.trim() : 'Sin descripción',
-                        stock: celdaStock ? celdaStock.innerText.trim() : '0',
-                        precio: celdaPrecio ? celdaPrecio.innerText.trim() : '0'
+                        found: true,
+                        data: {
+                            codigo: textoCodigo,
+                            descripcion: celdaDesc ? celdaDesc.innerText.trim() : 'Sin descripción',
+                            stock: celdaStock ? celdaStock.innerText.trim() : '0',
+                            precio: celdaPrecio ? celdaPrecio.innerText.trim() : '0'
+                        }
                     };
                 }
             }
-            return null;
+            
+            // Si no encontramos match, devolvemos la info de debug
+            return { found: false, count: filas.length, seen: debugInfo };
         }, skuLimpio);
 
-        if (resultado) {
-            res.json({ status: 'ok', mensaje: 'Producto encontrado', data: resultado });
+        console.log('Resultado obtenido:', resultado);
+
+        if (resultado.found) {
+            res.json({ status: 'ok', mensaje: 'Producto encontrado', data: resultado.data });
         } else {
+            // Devolvemos el debug al frontend para que veas qué pasó
             res.json({
                 status: 'ok',
                 mensaje: 'Agotado o No encontrado',
+                debug: {
+                    filas_encontradas: resultado.count,
+                    codigos_vistos: resultado.seen
+                },
                 data: { codigo: skuLimpio, stock: '0', precio: '-' }
             });
         }
