@@ -91,7 +91,7 @@ app.get('/consultar', async (req, res) => {
         await erpPage.evaluate(el => el.click(), btnArt);
 
         console.log('6. Esperando carga de módulo (10 seg)...');
-        await new Promise(r => setTimeout(r, 10000)); // Damos más tiempo por si acaso
+        await new Promise(r => setTimeout(r, 10000)); 
 
         // 5. BÚSQUEDA DEL INPUT (MODO SABUESO)
         console.log('7. Escaneando TODOS los frames buscando el input...');
@@ -100,12 +100,10 @@ app.get('/consultar', async (req, res) => {
         let foundSelector = null;
         const selectorPrincipal = 'input[formcontrolname="searchInputText"]';
         
-        // Escaneamos la página principal y todos los iframes
         const allFrames = erpPage.frames();
         console.log(`   > Se encontraron ${allFrames.length} marcos/frames.`);
 
         for (const frame of allFrames) {
-            // Intentamos encontrar el input en este frame
             const existe = await frame.$(selectorPrincipal);
             if (existe) {
                 console.log(`   > ¡EUREKA! Input encontrado en frame: ${frame.url()}`);
@@ -116,10 +114,9 @@ app.get('/consultar', async (req, res) => {
         }
 
         if (!targetFrame) {
-            // Intento desesperado: buscar por placeholder en todos los frames
             console.log('   > Selector exacto falló. Buscando por placeholder...');
             for (const frame of allFrames) {
-                const existe = await frame.$('input[placeholder*="escripción"]'); // "Descripción"
+                const existe = await frame.$('input[placeholder*="escripción"]'); 
                 if (existe) {
                     console.log(`   > Encontrado por placeholder en frame: ${frame.url()}`);
                     targetFrame = frame;
@@ -136,18 +133,22 @@ app.get('/consultar', async (req, res) => {
         // ACCIÓN: Escribir SKU
         console.log(`8. Escribiendo SKU en el frame correcto...`);
         
-        // Aseguramos foco
+        // 1. Hacemos click para asegurar el FOCO dentro del iframe
         await targetFrame.click(foundSelector); 
         await new Promise(r => setTimeout(r, 500));
 
-        // Limpieza y escritura
+        // 2. Borramos y escribimos (Usando el frame)
         await targetFrame.evaluate((sel) => { document.querySelector(sel).value = ''; }, foundSelector);
         await targetFrame.type(foundSelector, skuLimpio);
-        await targetFrame.keyboard.press('Enter');
+        
+        // 3. ENTER (CORREGIDO: Usamos erpPage.keyboard, no targetFrame.keyboard)
+        // El foco ya está en el input, así que el teclado global funcionará.
+        await erpPage.keyboard.press('Enter');
 
         // 6. RESULTADOS
         console.log('9. Esperando resultados...');
         try {
+            // Buscamos la tabla DENTRO del mismo frame donde estaba el input
             await targetFrame.waitForSelector('.mat-column-id', { timeout: 15000 });
         } catch (e) {
             console.log('...Tabla lenta o vacía...');
