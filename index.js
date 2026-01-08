@@ -16,14 +16,15 @@ app.use((req, res, next) => {
 
 // --- FUNCIÓN DE INICIO (Login + Salto Directo) ---
 async function iniciarRobot() {
-    console.log('🤖 INICIANDO ROBOT (Modo Directo)...');
+    console.log('🤖 INICIANDO ROBOT (Modo Persistente)...');
     robotListo = false;
 
     try {
         if (globalBrowser) await globalBrowser.close();
 
+        // Configuración para Render (ahorro de memoria)
         globalBrowser = await puppeteer.launch({
-            headless: true, // true es más estable en Render Free
+            headless: true, 
             args: [
                 '--no-sandbox', 
                 '--disable-setuid-sandbox',
@@ -35,15 +36,15 @@ async function iniciarRobot() {
         });
 
         const page = await globalBrowser.newPage();
-        workPage = page; // Guardamos la referencia
+        workPage = page;
 
-        // Tiempos generosos para el arranque
+        // Tiempos generosos
         page.setDefaultNavigationTimeout(60000);
         page.setDefaultTimeout(60000);
         await page.setViewport({ width: 1920, height: 1080 });
 
-        // 1. LOGIN (Necesario para obtener la sesión)
-        console.log('   > 1. Autenticando en Portal...');
+        // 1. LOGIN
+        console.log('   > 1. Autenticando...');
         await page.goto('https://portal.defontana.com/login', { waitUntil: 'domcontentloaded' });
         
         await page.waitForSelector('input[formcontrolname="email"]');
@@ -56,30 +57,28 @@ async function iniciarRobot() {
             page.waitForNavigation({ waitUntil: 'domcontentloaded' })
         ]);
         
-        console.log('   > 2. Login OK. Esperando 5s para consolidar sesión...');
-        // Esperamos un poco para que se guarden las cookies de sesión
+        console.log('   > 2. Login OK. Consolidando sesión (5s)...');
         await new Promise(r => setTimeout(r, 5000));
 
-        // 2. SALTO DIRECTO (Tu estrategia maestra)
-        console.log('   > 3. Saltando directo a Maestro-UX (Artículos)...');
-        // Usamos la misma pestaña para ahorrar memoria
+        // 2. SALTO DIRECTO A MAESTRO-UX
+        console.log('   > 3. Saltando directo a Artículos...');
         await page.goto('https://maestro-ux.defontana.com/article', { waitUntil: 'networkidle2' });
 
-        // 3. VERIFICACIÓN
+        // 3. VERIFICACIÓN Y ESPERA
         console.log('   > 4. Esperando cuadro de búsqueda...');
         const selectorInput = 'input[formcontrolname="searchInputText"]';
         
-        try {
-            await page.waitForSelector(selectorInput, { timeout: 20000 });
-            console.log('   ✅ ROBOT ESTACIONADO Y LISTO PARA BUSCAR');
-            robotListo = true;
-        } catch (e) {
-            console.error('   ❌ Error: No cargó la página de artículos. Posible error de sesión.');
-            throw e;
-        }
+        // Esperamos a que el input exista
+        await page.waitForSelector(selectorInput, { timeout: 30000 });
+        
+        // TRUCO EXTRA: Esperar 3 segundos más para que desaparezcan spinners/animaciones
+        await new Promise(r => setTimeout(r, 3000));
+
+        console.log('   ✅ ROBOT ESTACIONADO Y LISTO PARA BUSCAR');
+        robotListo = true;
 
     } catch (error) {
-        console.error('❌ Error fatal iniciando robot:', error);
+        console.error('❌ Error iniciando robot:', error);
         robotListo = false;
         if (globalBrowser) await globalBrowser.close();
     }
@@ -94,14 +93,14 @@ app.get('/consultar', async (req, res) => {
 
     if (!skuBuscado) return res.status(400).json({ error: 'Falta SKU' });
     
-    // Si el robot no está listo, intentamos revivirlo
+    // Revivir si murió
     if (!robotListo || !workPage) {
-        iniciarRobot(); // Se lanza en fondo
-        return res.status(503).json({ error: 'El robot se está iniciando. Intenta en 1 minuto.' });
+        iniciarRobot(); 
+        return res.status(503).json({ error: 'Reiniciando sistema... Intenta en 1 min.' });
     }
 
     if (robotOcupado) {
-        return res.status(429).json({ error: 'Robot ocupado. Intenta en 2 segundos.' });
+        return res.status(429).json({ error: 'Sistema ocupado. Intenta en 2 seg.' });
     }
 
     robotOcupado = true;
@@ -111,37 +110,39 @@ app.get('/consultar', async (req, res) => {
     try {
         const selectorInput = 'input[formcontrolname="searchInputText"]';
         
-        // 1. Limpieza y Escritura (MÉTODO TECLADO HUMANO)
-        // Hacemos clic 3 veces para seleccionar todo el texto anterior (si hay)
-        await workPage.click(selectorInput, { clickCount: 3 });
+        // --- AQUÍ ESTÁ LA CORRECCIÓN CLAVE ---
+        // En lugar de click(), usamos focus() vía JS. Esto no falla nunca.
+        await workPage.evaluate((sel) => {
+            const input = document.querySelector(sel);
+            if(input) input.focus(); // Obliga al navegador a entrar aquí
+        }, selectorInput);
+
+        // Pequeña pausa para asegurar que el foco entró
         await new Promise(r => setTimeout(r, 100));
         
-        // Borramos con Backspace
+        // Limpieza con Teclado (Ctrl + A -> Backspace)
+        await workPage.keyboard.down('Control');
+        await workPage.keyboard.press('A');
+        await workPage.keyboard.up('Control');
         await workPage.keyboard.press('Backspace');
         
-        // Escribimos letra por letra (Angular necesita esto)
+        // Escribir y Enter
         await workPage.type(selectorInput, skuLimpio, { delay: 50 });
-        await new Promise(r => setTimeout(r, 200));
-        
-        // Enter
+        await new Promise(r => setTimeout(r, 100)); // Breve pausa antes de Enter
         await workPage.keyboard.press('Enter');
 
         // 2. Esperar Resultados
-        // Esperamos a que la tabla reaccione. Si no aparece nada en 3s, asumimos vacío o carga rápida.
+        // Esperamos brevemente a que la tabla reaccione
         try {
-            // Esperamos que aparezca AL MENOS una celda de código
-            await workPage.waitForSelector('.mat-column-id', { timeout: 4000 });
-        } catch(e) { /* Timeout es normal si no hay resultados */ }
+            await workPage.waitForSelector('.mat-column-id', { timeout: 5000 });
+        } catch(e) { /* Si no sale nada es que no encontró, seguimos */ }
 
-        // 3. Extracción de Datos (SEGÚN TUS SELECTORES)
+        // 3. Extracción de Datos
         const resultado = await workPage.evaluate((sku) => {
             const filas = document.querySelectorAll('tr.mat-row');
-            
-            // Debug: Ver qué códigos estamos viendo en pantalla
             const vistos = [];
 
             for (let fila of filas) {
-                // Usamos las clases que me indicaste (Angular Material standard)
                 const celdaCodigo = fila.querySelector('.mat-column-id');
                 const celdaDesc = fila.querySelector('.mat-column-description');
                 const celdaStock = fila.querySelector('.mat-column-stock');
@@ -150,13 +151,14 @@ app.get('/consultar', async (req, res) => {
                 const textoCodigo = celdaCodigo ? celdaCodigo.innerText.trim() : '';
                 vistos.push(textoCodigo);
 
-                // Verificamos coincidencia
+                // Buscamos coincidencia (exacta o parcial)
                 if (textoCodigo === sku || textoCodigo.includes(sku)) {
                     return {
                         found: true,
                         data: {
                             codigo: textoCodigo,
                             descripcion: celdaDesc ? celdaDesc.innerText.trim() : 'Sin descripción',
+                            // Limpiamos espacios extra en stock y precio
                             stock: celdaStock ? celdaStock.innerText.trim() : '0',
                             precio: celdaPrecio ? celdaPrecio.innerText.trim() : '0'
                         }
@@ -175,7 +177,7 @@ app.get('/consultar', async (req, res) => {
             res.json({ 
                 status: 'ok', 
                 mensaje: 'No encontrado', 
-                debug: resultado.seen, // Para que veas qué leyó el robot
+                debug: resultado.seen, 
                 data: { codigo: skuLimpio, stock: '0', precio: '-' } 
             });
         }
@@ -183,7 +185,8 @@ app.get('/consultar', async (req, res) => {
     } catch (error) {
         console.error('Error en búsqueda:', error);
         robotOcupado = false;
-        // Si hay error de conexión, marcamos el robot como no listo para que se reinicie
+        
+        // Si el error es grave (navegador cerrado), marcamos para reinicio
         if (error.message.includes('Target closed') || error.message.includes('Session closed')) {
             robotListo = false;
         }
@@ -191,15 +194,15 @@ app.get('/consultar', async (req, res) => {
     }
 });
 
-// --- LATIDO PARA MANTENER SESIÓN VIVA ---
+// --- MANTENER VIVO ---
 setInterval(async () => {
     if (robotListo && workPage) {
         try {
-            // Clic en un lugar vacío para que no nos desconecte por inactividad
-            await workPage.click('body'); 
+            // Clic en la nada para mantener sesión activa
+            await workPage.mouse.click(10, 10);
         } catch(e) { robotListo = false; }
     }
-}, 300000); // Cada 5 mins
+}, 300000); // 5 min
 
 app.listen(port, () => {
     console.log(`🚀 Servidor listo en puerto ${port}`);
