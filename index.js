@@ -61,7 +61,7 @@ app.get('/consultar', async (req, res) => {
         const [erpButton] = await page.$x(erpButtonSelector);
         
         await erpButton.click();
-        await new Promise(r => setTimeout(r, 5000)); 
+        await new Promise(r => setTimeout(r, 3000)); 
 
         // 3. RECUPERAR PESTAÑA
         const pages = await browser.pages();
@@ -73,8 +73,8 @@ app.get('/consultar', async (req, res) => {
         erpPage.setDefaultTimeout(60000);
         await erpPage.setViewport({ width: 1920, height: 1080 });
 
-        console.log('3. Pestaña capturada. ESPERANDO 15 SEGUNDOS...');
-        await new Promise(r => setTimeout(r, 15000));
+        console.log('3. Pestaña capturada. ESPERANDO 5 SEGUNDOS...');
+        await new Promise(r => setTimeout(r, 5000));
 
         // 4. NAVEGACIÓN
         console.log('4. Buscando menú Inventario...');
@@ -93,8 +93,8 @@ app.get('/consultar', async (req, res) => {
         const [btnArt] = await erpPage.$x(xpathArticulos);
         await erpPage.evaluate(el => el.click(), btnArt);
 
-        console.log('6. Esperando carga de módulo (10 seg)...');
-        await new Promise(r => setTimeout(r, 10000)); 
+        console.log('6. Esperando carga de módulo (5 seg)...');
+        await new Promise(r => setTimeout(r, 5000)); 
 
         // 5. BÚSQUEDA DEL INPUT
         console.log('7. Escaneando frames...');
@@ -215,3 +215,4 @@ app.get('/consultar', async (req, res) => {
 app.listen(port, () => {
     console.log(`Servidor listo en puerto ${port}`);
 });
+
