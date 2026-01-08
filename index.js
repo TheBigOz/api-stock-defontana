@@ -3,25 +3,27 @@ const puppeteer = require('puppeteer');
 const app = express();
 const port = process.env.PORT || 3000;
 
-// VARIABLES GLOBALES (El estado del Robot)
+// VARIABLES GLOBALES (Estado del Robot)
 let globalBrowser = null;
-let targetFrame = null; // Aquí guardaremos el iframe listo para buscar
-let erpPage = null;     // La página principal
-let robotOcupado = false; // Semáforo para que no se crucen búsquedas
+let workPage = null; // La página única de trabajo
+let robotListo = false;
+let robotOcupado = false;
 
 app.use((req, res, next) => {
     res.header('Access-Control-Allow-Origin', '*');
     next();
 });
 
-// --- FUNCIÓN DE INICIO (ARRANCA EL MOTOR) ---
+// --- FUNCIÓN DE INICIO (Login + Salto Directo) ---
 async function iniciarRobot() {
-    console.log('🤖 INICIANDO ROBOT (Login y Preparación)...');
+    console.log('🤖 INICIANDO ROBOT (Modo Directo)...');
+    robotListo = false;
+
     try {
         if (globalBrowser) await globalBrowser.close();
 
         globalBrowser = await puppeteer.launch({
-            headless: true, // Modo servidor
+            headless: true, // true es más estable en Render Free
             args: [
                 '--no-sandbox', 
                 '--disable-setuid-sandbox',
@@ -33,16 +35,19 @@ async function iniciarRobot() {
         });
 
         const page = await globalBrowser.newPage();
+        workPage = page; // Guardamos la referencia
+
+        // Tiempos generosos para el arranque
         page.setDefaultNavigationTimeout(60000);
         page.setDefaultTimeout(60000);
         await page.setViewport({ width: 1920, height: 1080 });
 
-        // 1. LOGIN
-        console.log('   > Entrando al login...');
+        // 1. LOGIN (Necesario para obtener la sesión)
+        console.log('   > 1. Autenticando en Portal...');
         await page.goto('https://portal.defontana.com/login', { waitUntil: 'domcontentloaded' });
         
         await page.waitForSelector('input[formcontrolname="email"]');
-         // CREDENCIALES
+  // CREDENCIALES
         await page.type('input[formcontrolname="email"]', 'oz@microchip.cl'); 
         await page.type('input[formcontrolname="password"]', '@Emmet5264305!'); 
         
@@ -50,191 +55,152 @@ async function iniciarRobot() {
             page.click('button.df-primario'),
             page.waitForNavigation({ waitUntil: 'domcontentloaded' })
         ]);
-
-        // 2. ABRIR ERP
-        console.log('   > Abriendo ERP...');
-        const erpButtonSelector = "//h3[contains(text(), 'ERP Digital')]";
-        await page.waitForXPath(erpButtonSelector);
-        const [erpButton] = await page.$x(erpButtonSelector);
         
-        await erpButton.click();
-        await new Promise(r => setTimeout(r, 5000)); // Esperar nueva pestaña
+        console.log('   > 2. Login OK. Esperando 5s para consolidar sesión...');
+        // Esperamos un poco para que se guarden las cookies de sesión
+        await new Promise(r => setTimeout(r, 5000));
 
-        // 3. CAPTURAR PESTAÑA
-        const pages = await globalBrowser.pages();
-        erpPage = pages[pages.length - 1]; // Guardamos en variable global
+        // 2. SALTO DIRECTO (Tu estrategia maestra)
+        console.log('   > 3. Saltando directo a Maestro-UX (Artículos)...');
+        // Usamos la misma pestaña para ahorrar memoria
+        await page.goto('https://maestro-ux.defontana.com/article', { waitUntil: 'networkidle2' });
+
+        // 3. VERIFICACIÓN
+        console.log('   > 4. Esperando cuadro de búsqueda...');
+        const selectorInput = 'input[formcontrolname="searchInputText"]';
         
-        if (!erpPage) throw new Error("No se detectó pestaña ERP");
-        
-        // Configuraciones globales
-        erpPage.setDefaultNavigationTimeout(60000);
-        erpPage.setDefaultTimeout(60000);
-        await erpPage.setViewport({ width: 1920, height: 1080 });
-
-        console.log('   > Esperando carga inicial (12s)...');
-        await new Promise(r => setTimeout(r, 12000));
-
-        // 4. NAVEGAR A INVENTARIO
-        console.log('   > Navegando al menú...');
-        const xpathInventario = "//span[contains(text(), 'Inventario')]";
         try {
-            await erpPage.waitForXPath(xpathInventario, { visible: true, timeout: 5000 });
-            const [btnInv] = await erpPage.$x(xpathInventario);
-            await erpPage.evaluate(el => el.click(), btnInv);
-            await new Promise(r => setTimeout(r, 1000));
-        } catch(e) { console.log('   (Menú quizás ya abierto)'); }
-
-        const xpathArticulos = "//span[contains(text(), 'Artículos')]";
-        await erpPage.waitForXPath(xpathArticulos, { visible: true });
-        const [btnArt] = await erpPage.$x(xpathArticulos);
-        await erpPage.evaluate(el => el.click(), btnArt);
-
-        console.log('   > Cargando módulo Artículos (10s)...');
-        await new Promise(r => setTimeout(r, 10000));
-
-        // 5. LOCALIZAR EL IFRAME (Una sola vez)
-        console.log('   > Localizando iframe de búsqueda...');
-        const allFrames = erpPage.frames();
-        targetFrame = null;
-
-        for (const frame of allFrames) {
-            const existe = await frame.$('input[formcontrolname="searchInputText"]');
-            if (existe) {
-                targetFrame = frame;
-                console.log(`✅ ROBOT LISTO EN: ${frame.url()}`);
-                break;
-            }
+            await page.waitForSelector(selectorInput, { timeout: 20000 });
+            console.log('   ✅ ROBOT ESTACIONADO Y LISTO PARA BUSCAR');
+            robotListo = true;
+        } catch (e) {
+            console.error('   ❌ Error: No cargó la página de artículos. Posible error de sesión.');
+            throw e;
         }
-
-        if (!targetFrame) {
-            // Backup search
-            for (const frame of allFrames) {
-                if (await frame.$('input[placeholder*="escripción"]')) {
-                    targetFrame = frame;
-                    console.log(`✅ ROBOT LISTO (Backup) EN: ${frame.url()}`);
-                    break;
-                }
-            }
-        }
-
-        if (!targetFrame) throw new Error("No se encontró el iframe de búsqueda");
-
-        // Robot listo para recibir órdenes
-        return true;
 
     } catch (error) {
-        console.error('❌ Error iniciando robot:', error);
+        console.error('❌ Error fatal iniciando robot:', error);
+        robotListo = false;
         if (globalBrowser) await globalBrowser.close();
-        globalBrowser = null;
-        targetFrame = null;
-        return false;
     }
 }
 
-// INICIAR AL ARRANCAR EL SERVIDOR
+// Arrancar al inicio
 iniciarRobot();
 
-// --- ENDPOINT DE CONSULTA RÁPIDA ---
+// --- ENDPOINT DE CONSULTA ---
 app.get('/consultar', async (req, res) => {
     const skuBuscado = req.query.sku;
+
     if (!skuBuscado) return res.status(400).json({ error: 'Falta SKU' });
     
-    // Verificamos si el robot está vivo
-    if (!globalBrowser || !targetFrame) {
-        // Intentamos revivirlo
-        const revivido = await iniciarRobot();
-        if (!revivido) {
-            return res.status(503).json({ error: 'El sistema se está reiniciando, intenta en 1 minuto.' });
-        }
+    // Si el robot no está listo, intentamos revivirlo
+    if (!robotListo || !workPage) {
+        iniciarRobot(); // Se lanza en fondo
+        return res.status(503).json({ error: 'El robot se está iniciando. Intenta en 1 minuto.' });
     }
 
-    // Evitar conflictos si dos personas buscan a la vez
     if (robotOcupado) {
-        return res.status(429).json({ error: 'Sistema ocupado, intenta en 2 segundos.' });
+        return res.status(429).json({ error: 'Robot ocupado. Intenta en 2 segundos.' });
     }
 
     robotOcupado = true;
     const skuLimpio = skuBuscado.trim().toUpperCase();
-    console.log(`⚡ Búsqueda Rápida: ${skuLimpio}`);
+    console.log(`⚡ Buscando: ${skuLimpio}`);
 
     try {
-        // Selector guardado
-        const selector = 'input[formcontrolname="searchInputText"]'; 
-        // Si fallara, habría que re-detectar, pero asumimos que el iframe no cambia ID
+        const selectorInput = 'input[formcontrolname="searchInputText"]';
         
-        // 1. Limpieza y Escritura (MÉTODO ULTRA RÁPIDO)
-        await targetFrame.click(selector, { clickCount: 3 });
-        await new Promise(r => setTimeout(r, 100)); // Pequeña pausa
-        await erpPage.keyboard.press('Backspace');
+        // 1. Limpieza y Escritura (MÉTODO TECLADO HUMANO)
+        // Hacemos clic 3 veces para seleccionar todo el texto anterior (si hay)
+        await workPage.click(selectorInput, { clickCount: 3 });
+        await new Promise(r => setTimeout(r, 100));
         
-        await targetFrame.type(selector, skuLimpio, { delay: 50 }); // Escribimos más rápido ahora
-        await erpPage.keyboard.press('Enter');
+        // Borramos con Backspace
+        await workPage.keyboard.press('Backspace');
+        
+        // Escribimos letra por letra (Angular necesita esto)
+        await workPage.type(selectorInput, skuLimpio, { delay: 50 });
+        await new Promise(r => setTimeout(r, 200));
+        
+        // Enter
+        await workPage.keyboard.press('Enter');
 
-        // 2. Esperar Resultados (Tiempo corto porque ya está cargado)
+        // 2. Esperar Resultados
+        // Esperamos a que la tabla reaccione. Si no aparece nada en 3s, asumimos vacío o carga rápida.
         try {
-            await targetFrame.waitForSelector('.mat-column-id', { timeout: 5000 });
-        } catch(e) { /* Si no aparece, asumimos vacío */ }
+            // Esperamos que aparezca AL MENOS una celda de código
+            await workPage.waitForSelector('.mat-column-id', { timeout: 4000 });
+        } catch(e) { /* Timeout es normal si no hay resultados */ }
 
-        // 3. Extracción
-        const resultado = await targetFrame.evaluate((sku) => {
+        // 3. Extracción de Datos (SEGÚN TUS SELECTORES)
+        const resultado = await workPage.evaluate((sku) => {
             const filas = document.querySelectorAll('tr.mat-row');
-            for (let fila of filas) {
-                const celdaCodigo = fila.querySelector('.mat-column-id');
-                const textoCodigo = celdaCodigo ? celdaCodigo.innerText.trim() : '';
+            
+            // Debug: Ver qué códigos estamos viendo en pantalla
+            const vistos = [];
 
-                if (textoCodigo.includes(sku)) {
-                    const celdaDesc = fila.querySelector('.mat-column-description');
-                    const celdaStock = fila.querySelector('.mat-column-stock');
-                    const celdaPrecio = fila.querySelector('.mat-column-salePrice');
+            for (let fila of filas) {
+                // Usamos las clases que me indicaste (Angular Material standard)
+                const celdaCodigo = fila.querySelector('.mat-column-id');
+                const celdaDesc = fila.querySelector('.mat-column-description');
+                const celdaStock = fila.querySelector('.mat-column-stock');
+                const celdaPrecio = fila.querySelector('.mat-column-salePrice');
+
+                const textoCodigo = celdaCodigo ? celdaCodigo.innerText.trim() : '';
+                vistos.push(textoCodigo);
+
+                // Verificamos coincidencia
+                if (textoCodigo === sku || textoCodigo.includes(sku)) {
                     return {
                         found: true,
                         data: {
                             codigo: textoCodigo,
-                            descripcion: celdaDesc ? celdaDesc.innerText.trim() : '',
+                            descripcion: celdaDesc ? celdaDesc.innerText.trim() : 'Sin descripción',
                             stock: celdaStock ? celdaStock.innerText.trim() : '0',
                             precio: celdaPrecio ? celdaPrecio.innerText.trim() : '0'
                         }
                     };
                 }
             }
-            return { found: false };
+            return { found: false, seen: vistos };
         }, skuLimpio);
 
         robotOcupado = false;
+        console.log('   > Resultado:', resultado);
 
         if (resultado.found) {
             res.json({ status: 'ok', mensaje: 'Encontrado', data: resultado.data });
         } else {
-            res.json({ status: 'ok', mensaje: 'No encontrado', data: { codigo: skuLimpio, stock: '0', precio: '-' } });
+            res.json({ 
+                status: 'ok', 
+                mensaje: 'No encontrado', 
+                debug: resultado.seen, // Para que veas qué leyó el robot
+                data: { codigo: skuLimpio, stock: '0', precio: '-' } 
+            });
         }
 
     } catch (error) {
-        console.error('Error en búsqueda rápida:', error);
+        console.error('Error en búsqueda:', error);
         robotOcupado = false;
-        
-        // Si hay error crítico (ej: navegador cerrado), reseteamos variables para que se reinicie en la prox
-        if (error.message.includes('Session closed') || error.message.includes('Target closed')) {
-            targetFrame = null;
-            globalBrowser = null;
+        // Si hay error de conexión, marcamos el robot como no listo para que se reinicie
+        if (error.message.includes('Target closed') || error.message.includes('Session closed')) {
+            robotListo = false;
         }
-        res.status(500).json({ error: 'Error de conexión', detalle: error.message });
+        res.status(500).json({ error: 'Error interno', detalle: error.message });
     }
 });
 
-// --- MANTENER VIVO EL SISTEMA (Ping cada 5 min) ---
+// --- LATIDO PARA MANTENER SESIÓN VIVA ---
 setInterval(async () => {
-    if (targetFrame && erpPage) {
-        console.log('💓 Heartbeat: Manteniendo sesión activa...');
+    if (robotListo && workPage) {
         try {
-            // Hacemos un click "fantasma" en el título para que no nos desconecte por inactividad
-            await erpPage.click('body');
-        } catch (e) {
-            console.log('⚠️ Sesión perdida, se reiniciará en la próxima consulta.');
-            targetFrame = null;
-        }
+            // Clic en un lugar vacío para que no nos desconecte por inactividad
+            await workPage.click('body'); 
+        } catch(e) { robotListo = false; }
     }
-}, 300000); // 5 minutos
+}, 300000); // Cada 5 mins
 
 app.listen(port, () => {
-    console.log(`🚀 Servidor Ultra-Rápido listo en puerto ${port}`);
+    console.log(`🚀 Servidor listo en puerto ${port}`);
 });
