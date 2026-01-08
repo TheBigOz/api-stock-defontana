@@ -4,7 +4,7 @@ const app = express();
 const port = process.env.PORT || 3000;
 
 let globalBrowser = null;
-let workPage = null;
+let workPage = null; // La página donde trabajaremos
 let robotListo = false;
 let robotOcupado = false;
 
@@ -13,9 +13,9 @@ app.use((req, res, next) => {
     next();
 });
 
-// --- FUNCIÓN DE INICIO ---
+// --- FUNCIÓN DE INICIO (Login + Validación + Navegación) ---
 async function iniciarRobot() {
-    console.log('🤖 INICIANDO ROBOT (Modo Persistente)...');
+    console.log('🤖 INICIANDO ROBOT (Modo Seguro + Persistente)...');
     robotListo = false;
 
     try {
@@ -33,52 +33,78 @@ async function iniciarRobot() {
             ]
         });
 
-        const page = await globalBrowser.newPage();
-        workPage = page;
-
-        page.setDefaultNavigationTimeout(60000);
-        page.setDefaultTimeout(60000);
-        await page.setViewport({ width: 1920, height: 1080 });
+        // Pestaña inicial (Portal)
+        const loginPage = await globalBrowser.newPage();
+        
+        loginPage.setDefaultNavigationTimeout(60000);
+        loginPage.setDefaultTimeout(60000);
+        await loginPage.setViewport({ width: 1920, height: 1080 });
 
         // 1. LOGIN
-        console.log('   > 1. Autenticando...');
-        await page.goto('https://portal.defontana.com/login', { waitUntil: 'domcontentloaded' });
+        console.log('   > 1. Autenticando en Portal...');
+        await loginPage.goto('https://portal.defontana.com/login', { waitUntil: 'domcontentloaded' });
         
-        await page.waitForSelector('input[formcontrolname="email"]');
-          // CREDENCIALES
+        await loginPage.waitForSelector('input[formcontrolname="email"]');
+ // CREDENCIALES
         await page.type('input[formcontrolname="email"]', 'oz@microchip.cl'); 
         await page.type('input[formcontrolname="password"]', '@Emmet5264305!'); 
-
-        await Promise.all([
-            page.click('button.df-primario'),
-            page.waitForNavigation({ waitUntil: 'domcontentloaded' })
-        ]);
         
-        console.log('   > 2. Login OK. Consolidando (5s)...');
-        await new Promise(r => setTimeout(r, 5000));
+        await Promise.all([
+            loginPage.click('button.df-primario'),
+            loginPage.waitForNavigation({ waitUntil: 'domcontentloaded' })
+        ]);
 
-        // 2. SALTO DIRECTO
-        console.log('   > 3. Saltando a Maestro-UX...');
-        await page.goto('https://maestro-ux.defontana.com/article', { waitUntil: 'networkidle2' });
+        console.log('   > 2. Login OK. Buscando botón ERP...');
 
-        // 3. VERIFICACIÓN PROFUNDA (Aquí estaba el fallo antes)
-        console.log('   > 4. Esperando buscador y TABLA...');
+        // 2. OBTENER CREDENCIAL (Clic en Botón)
+        // No podemos saltarnos esto, aquí es donde nos dan el "permiso"
+        const erpButtonSelector = "//h3[contains(text(), 'ERP Digital')]";
+        await loginPage.waitForXPath(erpButtonSelector);
+        const [erpButton] = await loginPage.$x(erpButtonSelector);
+        
+        // Preparamos la captura de la nueva pestaña
+        const newTargetPromise = globalBrowser.waitForTarget(target => target.opener() === loginPage.target());
+        
+        await erpButton.click();
+        console.log('   > 3. Entrando al ERP (Validando permisos)...');
+        
+        const newTarget = await newTargetPromise;
+        const erpPage = await newTarget.page(); // ¡Esta es la pestaña válida!
+
+        if (!erpPage) throw new Error("No se abrió la pestaña del ERP");
+
+        // Ahora trabajamos SOLO en esta pestaña nueva
+        workPage = erpPage;
+        
+        workPage.setDefaultNavigationTimeout(60000);
+        workPage.setDefaultTimeout(60000);
+        await workPage.setViewport({ width: 1920, height: 1080 });
+
+        // Esperamos a que la pestaña cargue un poco su contenido inicial (Dashboard)
+        await new Promise(r => setTimeout(r, 8000));
+
+        // 3. NAVEGAR A ARTÍCULOS
+        // Ahora que ya tenemos permiso en esta pestaña, SÍ podemos saltar directo
+        console.log('   > 4. Navegando internamente a Artículos...');
+        await workPage.goto('https://maestro-ux.defontana.com/article', { waitUntil: 'networkidle2' });
+
+        // 4. VERIFICACIÓN
+        console.log('   > 5. Esperando buscador...');
         const selectorInput = 'input[formcontrolname="searchInputText"]';
         
-        // Esperamos el input
-        await page.waitForSelector(selectorInput, { timeout: 30000 });
+        await workPage.waitForSelector(selectorInput, { timeout: 40000 });
         
-        // --- NUEVO: Esperamos a que la tabla cargue datos iniciales ---
-        // Si no esperamos esto, el robot busca en el vacío.
+        // Esperamos la tabla para confirmar que todo cargó bien
         try {
-            console.log('   > ...Esperando que aparezca la grilla de datos...');
-            await page.waitForSelector('tr.mat-row', { timeout: 20000 });
-            console.log('   > ¡Tabla detectada!');
-        } catch(e) {
-            console.log('   ⚠️ Advertencia: La tabla inicial tardó mucho o está vacía.');
-        }
+            await workPage.waitForSelector('tr.mat-row', { timeout: 10000 });
+            console.log('   > Tabla detectada.');
+        } catch(e) { console.log('   > Tabla vacía o cargando...'); }
 
         console.log('   ✅ ROBOT ESTACIONADO Y LISTO');
+        
+        // Cerramos la pestaña vieja del login para ahorrar memoria RAM
+        try { await loginPage.close(); } catch(e) {}
+        
         robotListo = true;
 
     } catch (error) {
@@ -97,7 +123,7 @@ app.get('/consultar', async (req, res) => {
     
     if (!robotListo || !workPage) {
         iniciarRobot(); 
-        return res.status(503).json({ error: 'Reiniciando sistema...' });
+        return res.status(503).json({ error: 'Reiniciando sistema... Espera 1 min.' });
     }
 
     if (robotOcupado) return res.status(429).json({ error: 'Ocupado.' });
@@ -109,58 +135,51 @@ app.get('/consultar', async (req, res) => {
     try {
         const selectorInput = 'input[formcontrolname="searchInputText"]';
 
-        // 1. ESCRITURA "ATÓMICA" (Inyección directa a Angular)
-        // Esto garantiza que el texto quede escrito sí o sí.
-        const valorReal = await workPage.evaluate((sel, texto) => {
+        // 1. INYECCIÓN JS (La forma más segura de escribir)
+        await workPage.evaluate((sel, texto) => {
             const input = document.querySelector(sel);
-            if (!input) return null;
-
-            // 1. Foco
+            if (!input) return;
+            
             input.focus();
-            
-            // 2. Asignación directa
             input.value = texto;
-            
-            // 3. Disparar eventos para que Angular se despierte
             input.dispatchEvent(new Event('input', { bubbles: true }));
             input.dispatchEvent(new Event('change', { bubbles: true }));
-            
-            return input.value; // Devolvemos para verificar
         }, selectorInput, skuLimpio);
 
-        console.log(`   > Texto inyectado: "${valorReal}". Presionando Enter...`);
-        
-        // Esperamos un milisegundo y damos Enter
-        await new Promise(r => setTimeout(r, 200));
+        await new Promise(r => setTimeout(r, 300));
         await workPage.keyboard.press('Enter');
 
-        // 2. ESPERA INTELIGENTE
-        // Esperamos 3 segundos fijos para dar tiempo a la búsqueda
-        await new Promise(r => setTimeout(r, 3000));
+        // 2. ESPERA
+        // Esperamos 4 segundos a que la tabla se actualice
+        await new Promise(r => setTimeout(r, 4000));
 
         // 3. EXTRACCIÓN
         const resultado = await workPage.evaluate((sku) => {
-            // Buscamos filas
             const filas = document.querySelectorAll('tr.mat-row');
-            const vistos = [];
+            const debugInfo = []; // Guardamos lo que vemos para depurar
 
-            // Si no hay filas, devolvemos error específico
             if (filas.length === 0) {
-                return { found: false, count: 0, htmlBody: document.body.innerText.substring(0, 100) }; // Debug extremo
+                // Chequeo de seguridad: ¿Seguimos logueados?
+                const bodyText = document.body.innerText;
+                if (bodyText.includes('no tiene permiso') || bodyText.includes('Login')) {
+                    return { error: 'Sesion_Caducada' };
+                }
+                return { found: false, count: 0 }; 
             }
 
             for (let fila of filas) {
-                // Selectores EXACTOS que me diste
                 const celdaCodigo = fila.querySelector('.mat-column-id');
-                const celdaDesc = fila.querySelector('.mat-column-description');
-                const celdaStock = fila.querySelector('.mat-column-stock span'); // Ojo al span
-                const celdaPrecio = fila.querySelector('.mat-column-salePrice');
+                const textoCodigo = celdaCodigo ? celdaCodigo.innerText.trim() : '';
+                
+                debugInfo.push(textoCodigo);
 
-                const textoCodigo = celdaCodigo ? celdaCodigo.innerText.trim() : '???';
-                vistos.push(textoCodigo);
-
-                // Comparamos (Includes es más seguro por si hay espacios)
+                // Buscamos coincidencia
                 if (textoCodigo.includes(sku)) {
+                    const celdaDesc = fila.querySelector('.mat-column-description');
+                    // Ajuste: A veces el stock está directo o en un span
+                    const celdaStock = fila.querySelector('.mat-column-stock'); 
+                    const celdaPrecio = fila.querySelector('.mat-column-salePrice');
+
                     return {
                         found: true,
                         data: {
@@ -172,23 +191,24 @@ app.get('/consultar', async (req, res) => {
                     };
                 }
             }
-            return { found: false, count: filas.length, seen: vistos };
+            return { found: false, count: filas.length, seen: debugInfo };
         }, skuLimpio);
 
         robotOcupado = false;
         console.log('   > Resultado:', resultado);
 
+        if (resultado.error === 'Sesion_Caducada') {
+            robotListo = false; // Forzar reinicio en la próxima
+            throw new Error('La sesión caducó, reiniciando...');
+        }
+
         if (resultado.found) {
             res.json({ status: 'ok', mensaje: 'Encontrado', data: resultado.data });
         } else {
-            // Analizamos por qué falló
-            let msg = 'No encontrado';
-            if (resultado.count === 0) msg = 'Error: La tabla aparece vacía.';
-
             res.json({ 
                 status: 'ok', 
-                mensaje: msg, 
-                debug: resultado, 
+                mensaje: 'No encontrado', 
+                debug: resultado.seen, 
                 data: { codigo: skuLimpio, stock: '0', precio: '-' } 
             });
         }
@@ -196,7 +216,6 @@ app.get('/consultar', async (req, res) => {
     } catch (error) {
         console.error('Error búsqueda:', error);
         robotOcupado = false;
-        // Si se cerró la sesión, marcamos para reinicio
         if (error.message.includes('Target closed') || error.message.includes('Session closed')) {
             robotListo = false;
         }
