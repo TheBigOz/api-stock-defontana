@@ -20,19 +20,21 @@ app.get('/consultar', async (req, res) => {
 
     let browser = null;
     try {
-        // Actualizado a headless: "new" para evitar el warning
+        // VOLVEMOS A LA CONFIGURACIÓN ESTABLE (headless: true)
         browser = await puppeteer.launch({
-            headless: "new",
+            headless: true, 
             args: [
                 '--no-sandbox', 
                 '--disable-setuid-sandbox',
                 '--disable-dev-shm-usage',
-                '--single-process',
+                '--single-process', // Ahorra memoria
+                '--no-zygote',      // Ahorra memoria
                 '--window-size=1920,1080'
             ]
         });
 
         const page = await browser.newPage();
+        // Tiempos generosos
         page.setDefaultNavigationTimeout(60000); 
         page.setDefaultTimeout(60000);
         await page.setViewport({ width: 1920, height: 1080 });
@@ -42,10 +44,10 @@ app.get('/consultar', async (req, res) => {
         await page.goto('https://portal.defontana.com/login', { waitUntil: 'domcontentloaded' });
 
         await page.waitForSelector('input[formcontrolname="email"]');
-                // CREDENCIALES
+               // CREDENCIALES
         await page.type('input[formcontrolname="email"]', 'oz@microchip.cl'); 
         await page.type('input[formcontrolname="password"]', '@Emmet5264305!'); 
-
+        
         await Promise.all([
             page.click('button.df-primario'),
             page.waitForNavigation({ waitUntil: 'domcontentloaded' })
@@ -113,7 +115,7 @@ app.get('/consultar', async (req, res) => {
         }
 
         if (!targetFrame) {
-            // Backup por si acaso
+            // Backup placeholder
             for (const frame of allFrames) {
                 if (await frame.$('input[placeholder*="escripción"]')) {
                     targetFrame = frame;
@@ -125,39 +127,35 @@ app.get('/consultar', async (req, res) => {
 
         if (!targetFrame) throw new Error("No se encontró el input.");
 
-        // ACCIÓN: Escribir SKU con TÉCNICA HUMANA PARA ANGULAR
-        console.log(`8. Escribiendo SKU: ${skuLimpio} (Modo Humano)`);
+        // ACCIÓN: Escribir SKU (MÉTODO 100% TECLADO)
+        console.log(`8. Escribiendo SKU: ${skuLimpio}`);
         
-        // A) Foco y Limpieza real (Triple clic + Backspace)
-        await targetFrame.click(foundSelector, { clickCount: 3 });
+        // A) Hacemos clic para poner el foco
+        await targetFrame.click(foundSelector);
+        await new Promise(r => setTimeout(r, 500));
+
+        // B) Borramos usando TECLADO (Ctrl+A -> Backspace)
+        // Esto Angular SÍ lo detecta, a diferencia de value=''
+        await erpPage.keyboard.down('Control');
+        await erpPage.keyboard.press('A');
+        await erpPage.keyboard.up('Control');
         await erpPage.keyboard.press('Backspace');
-        await new Promise(r => setTimeout(r, 500));
 
-        // B) Escribir muy despacio para que Angular detecte cada tecla
-        await targetFrame.type(foundSelector, skuLimpio, { delay: 150 });
-        await new Promise(r => setTimeout(r, 500));
-
-        // C) Forzar evento de actualización (Input + Change)
-        await targetFrame.evaluate((sel) => {
-            const input = document.querySelector(sel);
-            input.dispatchEvent(new Event('input', { bubbles: true }));
-            input.dispatchEvent(new Event('change', { bubbles: true }));
-            input.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter' })); // Simular evento de tecla
-        }, foundSelector);
-
-        // D) BLUR (Salir del campo) - Importante para Angular Material
-        // Hacemos clic en el body o título para quitar el foco
-        await targetFrame.click('body'); 
+        // C) Escribimos letra por letra (delay humano)
+        await targetFrame.type(foundSelector, skuLimpio, { delay: 100 });
         
-        // E) Presionar Enter (Teclado Global)
+        // D) Esperamos un momento para que Angular procese
+        await new Promise(r => setTimeout(r, 500));
+
+        // E) Presionamos Enter
         console.log('   > Texto ingresado. Presionando Enter...');
         await erpPage.keyboard.press('Enter');
 
         // 6. RESULTADOS
-        console.log('9. Esperando filtro de tabla...');
+        console.log('9. Esperando resultados...');
         
-        // Esperamos un poco para que la tabla se refresque
-        await new Promise(r => setTimeout(r, 3000));
+        // Damos tiempo a la tabla para refrescarse
+        await new Promise(r => setTimeout(r, 4000));
 
         // Extracción
         const resultado = await targetFrame.evaluate((sku) => {
@@ -170,8 +168,8 @@ app.get('/consultar', async (req, res) => {
                 
                 debugInfo.push(textoCodigo);
 
-                // Comparamos
-                if (textoCodigo === sku) {
+                // Comparamos (usamos includes para ser más flexibles)
+                if (textoCodigo.includes(sku)) {
                     const celdaDesc = fila.querySelector('.mat-column-description');
                     const celdaStock = fila.querySelector('.mat-column-stock');
                     const celdaPrecio = fila.querySelector('.mat-column-salePrice');
