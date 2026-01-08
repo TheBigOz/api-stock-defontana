@@ -85,7 +85,7 @@ app.get('/consultar', async (req, res) => {
             await erpPage.evaluate(el => el.click(), btnInv);
         } catch(e) { console.log('   (Inventario quizás ya estaba abierto)'); }
 
-        await new Promise(r => setTimeout(r, 500));
+        await new Promise(r => setTimeout(r, 1000));
 
         console.log('5. Clickeando Artículos...');
         const xpathArticulos = "//span[contains(text(), 'Artículos')]";
@@ -132,7 +132,7 @@ app.get('/consultar', async (req, res) => {
         
         // A) Hacemos clic para poner el foco
         await targetFrame.click(foundSelector);
-        await new Promise(r => setTimeout(r, 500));
+        await new Promise(r => setTimeout(r, 1000));
 
         // B) Borramos usando TECLADO (Ctrl+A -> Backspace)
         // Esto Angular SÍ lo detecta, a diferencia de value=''
@@ -145,7 +145,7 @@ app.get('/consultar', async (req, res) => {
         await targetFrame.type(foundSelector, skuLimpio, { delay: 100 });
         
         // D) Esperamos un momento para que Angular procese
-        await new Promise(r => setTimeout(r, 500));
+        await new Promise(r => setTimeout(r, 1000));
 
         // E) Presionamos Enter
         console.log('   > Texto ingresado. Presionando Enter...');
@@ -215,5 +215,6 @@ app.get('/consultar', async (req, res) => {
 app.listen(port, () => {
     console.log(`Servidor listo en puerto ${port}`);
 });
+
 
 
