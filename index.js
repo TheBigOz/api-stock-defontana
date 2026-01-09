@@ -4,7 +4,7 @@ const app = express();
 const port = process.env.PORT || 3000;
 
 let globalBrowser = null;
-let workPage = null; // La página donde trabajaremos
+let workPage = null; // La página MAESTRA donde trabajaremos
 let robotListo = false;
 let robotOcupado = false;
 
@@ -13,9 +13,9 @@ app.use((req, res, next) => {
     next();
 });
 
-// --- FUNCIÓN DE INICIO (Login + Validación + Navegación) ---
+// --- FUNCIÓN DE INICIO ---
 async function iniciarRobot() {
-    console.log('🤖 INICIANDO ROBOT (Modo Seguro + Persistente)...');
+    console.log('🤖 INICIANDO ROBOT (Modo Seguro v2)...');
     robotListo = false;
 
     try {
@@ -33,14 +33,13 @@ async function iniciarRobot() {
             ]
         });
 
-        // Pestaña inicial (Portal)
+        // 1. PESTAÑA DE LOGIN (Solo para entrar)
         const loginPage = await globalBrowser.newPage();
         
         loginPage.setDefaultNavigationTimeout(60000);
         loginPage.setDefaultTimeout(60000);
         await loginPage.setViewport({ width: 1920, height: 1080 });
 
-        // 1. LOGIN
         console.log('   > 1. Autenticando en Portal...');
         await loginPage.goto('https://portal.defontana.com/login', { waitUntil: 'domcontentloaded' });
         
@@ -56,53 +55,51 @@ async function iniciarRobot() {
 
         console.log('   > 2. Login OK. Buscando botón ERP...');
 
-        // 2. OBTENER CREDENCIAL (Clic en Botón)
-        // No podemos saltarnos esto, aquí es donde nos dan el "permiso"
+        // 2. CLICK PARA OBTENER PERMISOS
         const erpButtonSelector = "//h3[contains(text(), 'ERP Digital')]";
         await loginPage.waitForXPath(erpButtonSelector);
         const [erpButton] = await loginPage.$x(erpButtonSelector);
         
-        // Preparamos la captura de la nueva pestaña
+        // Preparamos la captura de la NUEVA pestaña
         const newTargetPromise = globalBrowser.waitForTarget(target => target.opener() === loginPage.target());
         
         await erpButton.click();
-        console.log('   > 3. Entrando al ERP (Validando permisos)...');
+        console.log('   > 3. Entrando al ERP (Validando)...');
         
         const newTarget = await newTargetPromise;
-        const erpPage = await newTarget.page(); // ¡Esta es la pestaña válida!
+        const erpPage = await newTarget.page(); // ¡Esta es la buena!
 
         if (!erpPage) throw new Error("No se abrió la pestaña del ERP");
 
-        // Ahora trabajamos SOLO en esta pestaña nueva
+        // Asignamos la nueva pestaña a nuestra variable global de trabajo
         workPage = erpPage;
         
         workPage.setDefaultNavigationTimeout(60000);
         workPage.setDefaultTimeout(60000);
         await workPage.setViewport({ width: 1920, height: 1080 });
 
-        // Esperamos a que la pestaña cargue un poco su contenido inicial (Dashboard)
+        // Esperamos un poco para que el servidor valide el token
         await new Promise(r => setTimeout(r, 8000));
 
-        // 3. NAVEGAR A ARTÍCULOS
-        // Ahora que ya tenemos permiso en esta pestaña, SÍ podemos saltar directo
-        console.log('   > 4. Navegando internamente a Artículos...');
+        // 3. NAVEGACIÓN DIRECTA A ARTÍCULOS
+        console.log('   > 4. Yendo a Maestro-UX...');
         await workPage.goto('https://maestro-ux.defontana.com/article', { waitUntil: 'networkidle2' });
 
-        // 4. VERIFICACIÓN
+        // 4. VERIFICACIÓN FINAL
         console.log('   > 5. Esperando buscador...');
         const selectorInput = 'input[formcontrolname="searchInputText"]';
         
         await workPage.waitForSelector(selectorInput, { timeout: 40000 });
         
-        // Esperamos la tabla para confirmar que todo cargó bien
+        // Esperamos que la tabla cargue (opcional, pero recomendado)
         try {
             await workPage.waitForSelector('tr.mat-row', { timeout: 10000 });
-            console.log('   > Tabla detectada.');
+            console.log('   > Tabla inicial detectada.');
         } catch(e) { console.log('   > Tabla vacía o cargando...'); }
 
         console.log('   ✅ ROBOT ESTACIONADO Y LISTO');
         
-        // Cerramos la pestaña vieja del login para ahorrar memoria RAM
+        // Cerramos la pestaña vieja para ahorrar memoria
         try { await loginPage.close(); } catch(e) {}
         
         robotListo = true;
@@ -121,6 +118,7 @@ app.get('/consultar', async (req, res) => {
     const skuBuscado = req.query.sku;
     if (!skuBuscado) return res.status(400).json({ error: 'Falta SKU' });
     
+    // Si el robot murió, lo revivimos
     if (!robotListo || !workPage) {
         iniciarRobot(); 
         return res.status(503).json({ error: 'Reiniciando sistema... Espera 1 min.' });
@@ -135,33 +133,34 @@ app.get('/consultar', async (req, res) => {
     try {
         const selectorInput = 'input[formcontrolname="searchInputText"]';
 
-        // 1. INYECCIÓN JS (La forma más segura de escribir)
+        // 1. ESCRITURA SEGURA (Inyección JS)
         await workPage.evaluate((sel, texto) => {
             const input = document.querySelector(sel);
             if (!input) return;
             
             input.focus();
             input.value = texto;
+            // Disparamos eventos para que Angular reaccione
             input.dispatchEvent(new Event('input', { bubbles: true }));
             input.dispatchEvent(new Event('change', { bubbles: true }));
         }, selectorInput, skuLimpio);
 
-        await new Promise(r => setTimeout(r, 300));
+        await new Promise(r => setTimeout(r, 200));
         await workPage.keyboard.press('Enter');
 
         // 2. ESPERA
-        // Esperamos 4 segundos a que la tabla se actualice
+        // Esperamos 4 segundos para que refresque la tabla
         await new Promise(r => setTimeout(r, 4000));
 
         // 3. EXTRACCIÓN
         const resultado = await workPage.evaluate((sku) => {
             const filas = document.querySelectorAll('tr.mat-row');
-            const debugInfo = []; // Guardamos lo que vemos para depurar
+            const debugInfo = []; 
 
+            // Chequeo de seguridad: ¿Sesión caducada?
             if (filas.length === 0) {
-                // Chequeo de seguridad: ¿Seguimos logueados?
-                const bodyText = document.body.innerText;
-                if (bodyText.includes('no tiene permiso') || bodyText.includes('Login')) {
+                const body = document.body.innerText;
+                if (body.includes('no tiene permiso') || body.includes('Login')) {
                     return { error: 'Sesion_Caducada' };
                 }
                 return { found: false, count: 0 }; 
@@ -173,11 +172,10 @@ app.get('/consultar', async (req, res) => {
                 
                 debugInfo.push(textoCodigo);
 
-                // Buscamos coincidencia
+                // Buscamos coincidencia (usamos includes por seguridad)
                 if (textoCodigo.includes(sku)) {
                     const celdaDesc = fila.querySelector('.mat-column-description');
-                    // Ajuste: A veces el stock está directo o en un span
-                    const celdaStock = fila.querySelector('.mat-column-stock'); 
+                    const celdaStock = fila.querySelector('.mat-column-stock'); // Ojo: a veces tiene un span dentro
                     const celdaPrecio = fila.querySelector('.mat-column-salePrice');
 
                     return {
@@ -198,8 +196,8 @@ app.get('/consultar', async (req, res) => {
         console.log('   > Resultado:', resultado);
 
         if (resultado.error === 'Sesion_Caducada') {
-            robotListo = false; // Forzar reinicio en la próxima
-            throw new Error('La sesión caducó, reiniciando...');
+            robotListo = false; 
+            throw new Error('La sesión caducó.');
         }
 
         if (resultado.found) {
@@ -216,6 +214,7 @@ app.get('/consultar', async (req, res) => {
     } catch (error) {
         console.error('Error búsqueda:', error);
         robotOcupado = false;
+        // Si hay error crítico, forzamos reinicio
         if (error.message.includes('Target closed') || error.message.includes('Session closed')) {
             robotListo = false;
         }
