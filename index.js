@@ -15,7 +15,7 @@ app.use((req, res, next) => {
 
 // --- FUNCIÓN DE INICIO ---
 async function iniciarRobot() {
-    console.log('🤖 INICIANDO ROBOT (Modo Seguro v2)...');
+    console.log('🤖 INICIANDO ROBOT (Modo Seguro v3)...');
     robotListo = false;
 
     try {
@@ -33,7 +33,7 @@ async function iniciarRobot() {
             ]
         });
 
-        // 1. PESTAÑA DE LOGIN (Solo para entrar)
+        // 1. PESTAÑA DE LOGIN
         const loginPage = await globalBrowser.newPage();
         
         loginPage.setDefaultNavigationTimeout(60000);
@@ -47,6 +47,7 @@ async function iniciarRobot() {
  // CREDENCIALES
         await page.type('input[formcontrolname="email"]', 'oz@microchip.cl'); 
         await page.type('input[formcontrolname="password"]', '@Emmet5264305!'); 
+
         
         await Promise.all([
             loginPage.click('button.df-primario'),
@@ -60,7 +61,7 @@ async function iniciarRobot() {
         await loginPage.waitForXPath(erpButtonSelector);
         const [erpButton] = await loginPage.$x(erpButtonSelector);
         
-        // Preparamos la captura de la NUEVA pestaña
+        // --- AQUÍ ESTABA EL ERROR ANTES (Decía page.target, ahora dice loginPage.target) ---
         const newTargetPromise = globalBrowser.waitForTarget(target => target.opener() === loginPage.target());
         
         await erpButton.click();
@@ -91,7 +92,7 @@ async function iniciarRobot() {
         
         await workPage.waitForSelector(selectorInput, { timeout: 40000 });
         
-        // Esperamos que la tabla cargue (opcional, pero recomendado)
+        // Esperamos que la tabla cargue
         try {
             await workPage.waitForSelector('tr.mat-row', { timeout: 10000 });
             console.log('   > Tabla inicial detectada.');
@@ -99,7 +100,7 @@ async function iniciarRobot() {
 
         console.log('   ✅ ROBOT ESTACIONADO Y LISTO');
         
-        // Cerramos la pestaña vieja para ahorrar memoria
+        // Cerramos la pestaña vieja
         try { await loginPage.close(); } catch(e) {}
         
         robotListo = true;
@@ -175,7 +176,7 @@ app.get('/consultar', async (req, res) => {
                 // Buscamos coincidencia (usamos includes por seguridad)
                 if (textoCodigo.includes(sku)) {
                     const celdaDesc = fila.querySelector('.mat-column-description');
-                    const celdaStock = fila.querySelector('.mat-column-stock'); // Ojo: a veces tiene un span dentro
+                    const celdaStock = fila.querySelector('.mat-column-stock'); // A veces tiene un span dentro
                     const celdaPrecio = fila.querySelector('.mat-column-salePrice');
 
                     return {
