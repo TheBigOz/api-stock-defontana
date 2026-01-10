@@ -16,9 +16,9 @@ app.use((req, res, next) => {
     next();
 });
 
-// --- FUNCIÓN DE INICIO (Idéntica a la anterior) ---
+// --- FUNCIÓN DE INICIO OPTIMIZADA ---
 async function iniciarRobot() {
-    console.log('--- VERSIÓN v5.0 (AUDITOR DE BODEGAS) ---'); 
+    console.log('--- VERSIÓN v5.1 (MEMORIA OPTIMIZADA) ---'); 
     console.log('🤖 INICIANDO ROBOT...');
     robotListo = false;
 
@@ -30,16 +30,26 @@ async function iniciarRobot() {
             args: [
                 '--no-sandbox', 
                 '--disable-setuid-sandbox',
-                '--disable-dev-shm-usage',
+                '--disable-dev-shm-usage', // Vital para Docker/Render
                 '--single-process',
                 '--no-zygote',
                 '--window-size=1920,1080'
             ]
         });
 
+        // 1. PESTAÑA DE LOGIN
         const pestanaLogin = await globalBrowser.newPage();
+        // Optimizamos consumo desactivando cosas innecesarias
+        await pestanaLogin.setRequestInterception(true);
+        pestanaLogin.on('request', (req) => {
+            if (['image', 'font', 'media'].includes(req.resourceType())) {
+                req.abort(); // Ahorrar ancho de banda y RAM
+            } else {
+                req.continue();
+            }
+        });
+
         pestanaLogin.setDefaultNavigationTimeout(60000);
-        pestanaLogin.setDefaultTimeout(60000);
         await pestanaLogin.setViewport({ width: 1920, height: 1080 });
 
         console.log('   > 1. Autenticando...');
@@ -63,34 +73,43 @@ async function iniciarRobot() {
         const newTargetPromise = globalBrowser.waitForTarget(target => target.opener() === pestanaLogin.target());
         
         await erpButton.click();
-        console.log('   > 3. Entrando al ERP...');
+        console.log('   > 3. Abriendo pestaña ERP...');
         
         const newTarget = await newTargetPromise;
         const nuevaPestana = await newTarget.page(); 
 
         if (!nuevaPestana) throw new Error("No se abrió la pestaña del ERP");
 
+        // --- MANIOBRA DE MEMORIA ---
+        // 1. Asignamos la nueva pestaña
         pestanaTrabajo = nuevaPestana;
+        
+        // 2. Cerramos la pestaña vieja INMEDIATAMENTE para liberar RAM
+        console.log('   > 4. Liberando memoria (Cerrando Login)...');
+        await pestanaLogin.close();
+
+        // 3. Estabilizamos la nueva pestaña
         pestanaTrabajo.setDefaultNavigationTimeout(60000);
         pestanaTrabajo.setDefaultTimeout(60000);
         await pestanaTrabajo.setViewport({ width: 1920, height: 1080 });
 
-        console.log('   > 4. Esperando 15s (Estabilidad)...');
-        await new Promise(r => setTimeout(r, 15000));
+        // Esperamos a que el Dashboard cargue un poco antes de navegar
+        // Esto evita el error "Requesting main frame too early"
+        console.log('   > 5. Estabilizando Dashboard (10s)...');
+        await new Promise(r => setTimeout(r, 10000));
 
-        console.log('   > 5. Yendo a Maestro-UX...');
+        console.log('   > 6. Yendo a Maestro-UX...');
         await pestanaTrabajo.goto('https://maestro-ux.defontana.com/article', { waitUntil: 'domcontentloaded' });
 
-        console.log('   > 6. Esperando buscador...');
-        await pestanaTrabajo.waitForSelector('input[formcontrolname="searchInputText"]', { timeout: 40000 });
+        console.log('   > 7. Esperando buscador...');
+        await pestanaTrabajo.waitForSelector('input[formcontrolname="searchInputText"]', { timeout: 60000 });
         
         try {
-            await pestanaTrabajo.waitForSelector('tr.mat-row', { timeout: 15000 });
+            await pestanaTrabajo.waitForSelector('tr.mat-row', { timeout: 20000 });
             console.log('   > Tabla inicial detectada.');
         } catch(e) { console.log('   > Tabla vacía o cargando...'); }
 
         console.log('   ✅ ROBOT ESTACIONADO Y LISTO');
-        try { await pestanaLogin.close(); } catch(e) {}
         robotListo = true;
 
     } catch (error) {
@@ -122,21 +141,27 @@ app.get('/consultar', async (req, res) => {
         const selectorInput = 'input[formcontrolname="searchInputText"]';
 
         // 1. LIMPIEZA Y BÚSQUEDA
-        await pestanaTrabajo.evaluate((sel, texto) => {
-            const input = document.querySelector(sel);
-            if (!input) return;
-            input.focus();
-            input.value = texto;
-            input.dispatchEvent(new Event('input', { bubbles: true }));
-            input.dispatchEvent(new Event('change', { bubbles: true }));
-        }, selectorInput, skuLimpio);
+        // Usamos evaluate para poner el foco seguro
+        await pestanaTrabajo.evaluate((sel) => {
+            const el = document.querySelector(sel);
+            if(el) el.focus();
+        }, selectorInput);
+        
+        // Limpiamos con teclado (Ctrl+A -> Backspace)
+        await pestanaTrabajo.keyboard.down('Control');
+        await pestanaTrabajo.keyboard.press('A');
+        await pestanaTrabajo.keyboard.up('Control');
+        await pestanaTrabajo.keyboard.press('Backspace');
 
+        // Escribimos letra por letra (más estable que pegar de golpe)
+        await pestanaTrabajo.type(selectorInput, skuLimpio, { delay: 50 });
         await new Promise(r => setTimeout(r, 200));
         await pestanaTrabajo.keyboard.press('Enter');
-        await new Promise(r => setTimeout(r, 3500)); // Esperar grilla
+        
+        // Esperamos resultados
+        await new Promise(r => setTimeout(r, 4000));
 
-        // 2. ENCONTRAR FILA Y ABRIR POPUP
-        // Aquí ocurre la magia: Buscamos la fila correcta y hacemos clic en los 3 puntos
+        // 2. BUSCAR FILA Y CLICK EN MENÚ
         const datosGenerales = await pestanaTrabajo.evaluate(async (sku) => {
             const filas = document.querySelectorAll('tr.mat-row');
             for (let fila of filas) {
@@ -144,14 +169,12 @@ app.get('/consultar', async (req, res) => {
                 const textoCodigo = celdaCodigo ? celdaCodigo.innerText.trim() : '';
 
                 if (textoCodigo === sku) {
-                    // Encontramos la fila. Extraemos datos básicos primero.
                     const celdaDesc = fila.querySelector('.mat-column-description');
                     const celdaPrecio = fila.querySelector('.mat-column-salePrice');
                     
-                    // Ahora buscamos el botón de menú (los 3 puntos)
                     const botonMenu = fila.querySelector('.mat-menu-trigger');
                     if (botonMenu) {
-                        botonMenu.click(); // CLIC FÍSICO AL MENÚ
+                        botonMenu.click(); 
                         return { 
                             found: true, 
                             desc: celdaDesc ? celdaDesc.innerText.trim() : '',
@@ -168,23 +191,21 @@ app.get('/consultar', async (req, res) => {
             return res.json({ status: 'ok', mensaje: 'No encontrado', data: { codigo: skuLimpio, stockTotal: 0 } });
         }
 
-        // 3. SELECCIONAR "STOCK POR BODEGA" DEL MENÚ FLOTANTE
-        console.log('   > Menú abierto. Buscando opción "Stock por bodega"...');
-        // Esperamos a que aparezca el menú flotante
+        // 3. OPCIÓN "STOCK POR BODEGA"
+        console.log('   > Buscando opción menú...');
         try {
             const xpathOpcion = "//span[contains(text(), 'Stock por bodega')]";
             await pestanaTrabajo.waitForXPath(xpathOpcion, { visible: true, timeout: 5000 });
             const [opcionBtn] = await pestanaTrabajo.$x(xpathOpcion);
             await opcionBtn.click();
         } catch (e) {
-            throw new Error("No se pudo hacer clic en Stock por Bodega");
+            throw new Error("Menú no desplegó opción");
         }
 
-        // 4. LEER LA VENTANA EMERGENTE (POPUP)
-        console.log('   > Popup abierto. Leyendo bodegas...');
-        // Esperamos que cargue la tabla del popup
+        // 4. LEER POPUP
+        console.log('   > Leyendo popup...');
         await pestanaTrabajo.waitForSelector('.stock-article-storage-dialog', { timeout: 10000 });
-        await new Promise(r => setTimeout(r, 1000)); // Estabilidad
+        await new Promise(r => setTimeout(r, 1000));
 
         const bodegas = await pestanaTrabajo.evaluate(() => {
             const filas = document.querySelectorAll('.stock-article-storage-dialog tr.mat-row');
@@ -198,41 +219,32 @@ app.get('/consultar', async (req, res) => {
                 if (celdaNombre && celdaStock) {
                     const nombre = celdaNombre.innerText.trim();
                     let stockTexto = celdaStock.innerText.trim();
-                    
-                    // Convertir "Sin Stock" a 0
                     let stockNum = (stockTexto === 'Sin Stock') ? 0 : parseInt(stockTexto, 10);
                     if (isNaN(stockNum)) stockNum = 0;
 
-                    if (nombre.includes('Bodega_Central_962')) {
-                        central = stockNum;
-                    } else if (nombre.includes('Sala_Ventas_962')) {
-                        ventas = stockNum;
-                    }
+                    if (nombre.includes('Bodega_Central_962')) central = stockNum;
+                    else if (nombre.includes('Sala_Ventas_962')) ventas = stockNum;
                 }
             });
             return { central, ventas };
         });
 
-        // 5. CERRAR EL POPUP (MUY IMPORTANTE)
-        console.log('   > Cerrando popup...');
+        // 5. CERRAR POPUP
         await pestanaTrabajo.keyboard.press('Escape');
-        await new Promise(r => setTimeout(r, 500)); // Esperar cierre
+        await new Promise(r => setTimeout(r, 500));
 
         robotOcupado = false;
         
-        // Calculamos el total nosotros mismos para que sea real
-        const stockTotalCalculado = bodegas.central + bodegas.ventas;
-
         const respuestaFinal = {
             codigo: skuLimpio,
             descripcion: datosGenerales.desc,
             precio: datosGenerales.precio,
             stockCentral: bodegas.central,
             stockVentas: bodegas.ventas,
-            stockTotal: stockTotalCalculado
+            stockTotal: bodegas.central + bodegas.ventas
         };
 
-        console.log('   > Datos finales:', respuestaFinal);
+        console.log('   > Éxito:', respuestaFinal.codigo);
 
         res.json({ 
             status: 'ok', 
@@ -243,7 +255,6 @@ app.get('/consultar', async (req, res) => {
     } catch (error) {
         console.error('Error búsqueda:', error);
         robotOcupado = false;
-        // Intento de emergencia de cerrar popup si falló algo
         try { await pestanaTrabajo.keyboard.press('Escape'); } catch(e) {}
         
         if (error.message.includes('Target closed') || error.message.includes('Session closed')) {
