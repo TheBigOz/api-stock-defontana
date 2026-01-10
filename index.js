@@ -16,35 +16,109 @@ app.use((req, res, next) => {
     next();
 });
 
-// --- FUNCIÓN DE INICIO (CON ESCALA TÉCNICA EN HOME) ---
+// --- FUNCIÓN DE INICIO: EL RELEVO ÚNICO ---
 async function iniciarRobot() {
-    console.log('--- VERSIÓN v5.7 (ESCALA TÉCNICA EN HOME) ---'); 
+    console.log('--- VERSIÓN v5.8 (RELEVO ÚNICO DE MEMORIA) ---'); 
     console.log('🤖 INICIANDO ROBOT...');
     robotListo = false;
 
     try {
         if (globalBrowser) await globalBrowser.close();
 
+        // LANZAMIENTO AUSTERO
         globalBrowser = await puppeteer.launch({
             headless: "new",
             args: [
                 '--no-sandbox', 
                 '--disable-setuid-sandbox',
-                '--disable-dev-shm-usage',
-                '--single-process',
+                '--disable-dev-shm-usage', // Vital para Docker/Render
+                '--single-process', // Ahorro crítico de RAM
                 '--no-zygote',
                 '--disable-gpu',
                 '--disable-extensions',
+                '--disable-background-networking',
+                '--disable-default-apps',
+                '--disable-sync',
                 '--mute-audio',
+                '--no-first-run',
                 '--window-size=1280,720'
             ]
         });
 
-        const pestanaLogin = await globalBrowser.newPage();
+        // TRUCO DE ORO: No creamos pestaña nueva. Usamos la que viene por defecto.
+        // Así evitamos tener 2 pestañas (la blank y la login) al inicio.
+        const pages = await globalBrowser.pages();
+        const paginaActual = pages[0]; // Usamos esta para el Login
+
+        // INTERCEPTOR AGRESIVO
+        await paginaActual.setRequestInterception(true);
+        paginaActual.on('request', (req) => {
+            const rType = req.resourceType();
+            // Bloqueamos absolutamente todo lo visual
+            if (['image', 'font', 'media', 'stylesheet', 'other'].includes(rType)) {
+                req.abort();
+            } else {
+                req.continue();
+            }
+        });
+
+        paginaActual.setDefaultNavigationTimeout(180000); 
+        await paginaActual.setViewport({ width: 1280, height: 720 });
+
+        console.log('   > 1. Autenticando...');
         
-        // INTERCEPTOR 1: Login y Portal (Bloqueo agresivo)
-        await pestanaLogin.setRequestInterception(true);
-        pestanaLogin.on('request', (req) => {
+        try {
+            await paginaActual.goto('https://portal.defontana.com/login', { 
+                waitUntil: 'domcontentloaded', 
+                timeout: 60000 
+            });
+        } catch (e) { console.log('   (Carga lenta, seguimos...)'); }
+
+        await paginaActual.waitForSelector('input[formcontrolname="email"]', { timeout: 60000 });
+        //oz@microchip.cl 
+        //@Emmet53279!
+        await paginaActual.type('input[formcontrolname="email"]', 'oz@microchip.cl '); 
+        await paginaActual.type('input[formcontrolname="password"]', '@Emmet53279!'); 
+        
+        console.log('   > 2. Login...');
+        await paginaActual.click('button.df-primario');
+
+        console.log('   > 3. Esperando botón ERP...');
+        const erpButtonSelector = "//h3[contains(text(), 'ERP Digital')]";
+        try {
+            await paginaActual.waitForXPath(erpButtonSelector, { visible: true, timeout: 120000 });
+        } catch (error) {
+            throw new Error("Memoria insuficiente para cargar el menú de empresas.");
+        }
+        
+        const [erpButton] = await paginaActual.$x(erpButtonSelector);
+        
+        // --- LA MANIOBRA DE RIESGO (EL RELEVO) ---
+        console.log('   > 4. INICIANDO RELEVO DE PESTAÑA...');
+        
+        // 1. Preparamos la escucha
+        const newTargetPromise = globalBrowser.waitForTarget(target => target.opener() === paginaActual.target());
+        
+        // 2. Hacemos clic
+        await erpButton.click();
+        
+        // 3. Detectamos que se creó el "Target" (pero aún no cargamos la página)
+        const newTarget = await newTargetPromise;
+        
+        // 4. ¡MATAMOS LA PESTAÑA VIEJA ANTES DE CARGAR LA NUEVA!
+        // Esto libera los 100-200MB del Login para dárselos al ERP.
+        console.log('   > 5. Cerrando Login (Liberando RAM)...');
+        await paginaActual.close(); 
+        
+        // 5. Ahora sí, nos conectamos a la nueva pestaña
+        console.log('   > 6. Conectando a nueva pestaña...');
+        pestanaTrabajo = await newTarget.page();
+
+        if (!pestanaTrabajo) throw new Error("Falló el relevo de pestaña.");
+
+        // 6. Blindamos la nueva pestaña inmediatamente
+        await pestanaTrabajo.setRequestInterception(true);
+        pestanaTrabajo.on('request', (req) => {
             if (['image', 'font', 'media', 'stylesheet', 'other'].includes(req.resourceType())) {
                 req.abort();
             } else {
@@ -52,77 +126,23 @@ async function iniciarRobot() {
             }
         });
 
-        pestanaLogin.setDefaultNavigationTimeout(120000); 
-        await pestanaLogin.setViewport({ width: 1280, height: 720 });
-
-        console.log('   > 1. Autenticando...');
-        try {
-            await pestanaLogin.goto('https://portal.defontana.com/login', { waitUntil: 'domcontentloaded', timeout: 60000 });
-        } catch (e) {}
-
-        await pestanaLogin.waitForSelector('input[formcontrolname="email"]', { timeout: 60000 });
-        await pestanaLogin.type('input[formcontrolname="email"]', 'oz@microchip.cl'); 
-        await pestanaLogin.type('input[formcontrolname="password"]', '@Emmet53279!'); 
-        
-        console.log('   > 2. Entrando al Portal...');
-        await pestanaLogin.click('button.df-primario');
-
-        // Esperamos el botón del ERP
-        const erpButtonSelector = "//h3[contains(text(), 'ERP Digital')]";
-        try {
-            await pestanaLogin.waitForXPath(erpButtonSelector, { visible: true, timeout: 60000 });
-        } catch (error) {
-            throw new Error("No cargó el Portal (Memoria o Timeout).");
-        }
-        
-        const [erpButton] = await pestanaLogin.$x(erpButtonSelector);
-        
-        // Preparamos la captura de la pestaña HOME
-        const newTargetPromise = globalBrowser.waitForTarget(target => target.opener() === pestanaLogin.target());
-        
-        console.log('   > 3. Clic en ERP... Abriendo HOME...');
-        await erpButton.click();
-        
-        const newTarget = await newTargetPromise;
-        const nuevaPestana = await newTarget.page(); 
-
-        if (!nuevaPestana) throw new Error("No se abrió la pestaña del ERP");
-
-        // --- GESTIÓN DE LA NUEVA PESTAÑA (HOME) ---
-        pestanaTrabajo = nuevaPestana;
-
-        // ¡IMPORTANTE! Activamos el bloqueo en la nueva pestaña inmediatamente para que el Dashboard no consuma RAM
-        await pestanaTrabajo.setRequestInterception(true);
-        pestanaTrabajo.on('request', (req) => {
-            if (['image', 'font', 'media', 'stylesheet', 'other'].includes(req.resourceType())) {
-                req.abort(); // Bloqueamos los gráficos del Dashboard
-            } else {
-                req.continue();
-            }
-        });
-
-        // Cerramos login para ahorrar
-        await pestanaLogin.close();
-
         pestanaTrabajo.setDefaultNavigationTimeout(120000);
         await pestanaTrabajo.setViewport({ width: 1280, height: 720 });
 
-        // AQUÍ ESTÁ EL CAMBIO QUE PEDISTE:
-        console.log('   > 4. Marcando presencia en HOME (10s)...');
-        // Dejamos que la URL https://erp.defontana.com/#/Home cargue sus scripts básicos
-        // y valide el token, pero sin cargar imágenes gracias al interceptor.
+        console.log('   > 7. Marcando presencia en HOME (10s)...');
+        // Dejamos que cargue lo mínimo para validar el token
         await new Promise(r => setTimeout(r, 10000));
 
-        console.log('   > 5. Token validado. Saltando a Maestro-UX...');
+        console.log('   > 8. Yendo a Maestro-UX...');
         await pestanaTrabajo.goto('https://maestro-ux.defontana.com/article', { waitUntil: 'domcontentloaded' });
 
-        console.log('   > 6. Esperando buscador...');
+        console.log('   > 9. Esperando buscador...');
         await pestanaTrabajo.waitForSelector('input[formcontrolname="searchInputText"]', { timeout: 60000 });
         
         try {
             await pestanaTrabajo.waitForSelector('tr.mat-row', { timeout: 20000 });
             console.log('   > Tabla inicial detectada.');
-        } catch(e) { console.log('   > Tabla vacía o cargando...'); }
+        } catch(e) { console.log('   > Tabla vacía (Normal).'); }
 
         console.log('   ✅ ROBOT ESTACIONADO Y LISTO');
         robotListo = true;
@@ -136,7 +156,6 @@ async function iniciarRobot() {
 
 iniciarRobot();
 
-// Ping
 app.get('/ping', (req, res) => res.send('pong'));
 
 // --- ENDPOINT CONSULTA ---
@@ -158,7 +177,7 @@ app.get('/consultar', async (req, res) => {
     try {
         const selectorInput = 'input[formcontrolname="searchInputText"]';
 
-        // 1. Limpieza y Escritura
+        // 1. Limpieza
         await pestanaTrabajo.evaluate((sel) => {
             const el = document.querySelector(sel);
             if(el) el.focus();
@@ -171,7 +190,7 @@ app.get('/consultar', async (req, res) => {
         
         await new Promise(r => setTimeout(r, 4000));
 
-        // 2. Buscar fila y abrir menú
+        // 2. Buscar fila
         const datosGenerales = await pestanaTrabajo.evaluate(async (sku) => {
             const filas = document.querySelectorAll('tr.mat-row');
             for (let fila of filas) {
