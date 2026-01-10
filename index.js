@@ -64,7 +64,7 @@ async function iniciarRobot() {
         
         await pestanaLogin.waitForSelector('input[formcontrolname="email"]');
         await pestanaLogin.type('input[formcontrolname="email"]', 'oz@microchip.cl'); 
-        await pestanaLogin.type('input[formcontrolname="password"]', '@Emmet5264305!'); 
+        await pestanaLogin.type('input[formcontrolname="password"]', '@Emmet53279!'); 
         
         // ESTRATEGIA NUEVA: NO ESPERAR NAVEGACIÓN, ESPERAR EL RESULTADO
         console.log('   > 2. Enviando credenciales...');
@@ -285,3 +285,4 @@ setInterval(async () => {
 app.listen(port, () => {
     console.log(`🚀 Servidor listo en puerto ${port}`);
 });
+
