@@ -18,7 +18,7 @@ app.use((req, res, next) => {
 
 // --- FUNCIÓN DE INICIO OPTIMIZADA ---
 async function iniciarRobot() {
-    console.log('--- VERSIÓN v5.1 (MEMORIA OPTIMIZADA) ---'); 
+    console.log('--- VERSIÓN v5.2 (INSOMNIO) ---'); 
     console.log('🤖 INICIANDO ROBOT...');
     robotListo = false;
 
@@ -30,7 +30,7 @@ async function iniciarRobot() {
             args: [
                 '--no-sandbox', 
                 '--disable-setuid-sandbox',
-                '--disable-dev-shm-usage', // Vital para Docker/Render
+                '--disable-dev-shm-usage',
                 '--single-process',
                 '--no-zygote',
                 '--window-size=1920,1080'
@@ -39,11 +39,10 @@ async function iniciarRobot() {
 
         // 1. PESTAÑA DE LOGIN
         const pestanaLogin = await globalBrowser.newPage();
-        // Optimizamos consumo desactivando cosas innecesarias
         await pestanaLogin.setRequestInterception(true);
         pestanaLogin.on('request', (req) => {
             if (['image', 'font', 'media'].includes(req.resourceType())) {
-                req.abort(); // Ahorrar ancho de banda y RAM
+                req.abort();
             } else {
                 req.continue();
             }
@@ -56,7 +55,7 @@ async function iniciarRobot() {
         await pestanaLogin.goto('https://portal.defontana.com/login', { waitUntil: 'domcontentloaded' });
         
         await pestanaLogin.waitForSelector('input[formcontrolname="email"]');
-        await pestanaLogin.type('input[formcontrolname="email"]', 'oz@microchip.cl'); 
+        await pestanaLogin.type('input[formcontrolname="email"]', 'Toz@microchip.cl'); 
         await pestanaLogin.type('input[formcontrolname="password"]', '@Emmet5264305!'); 
         
         await Promise.all([
@@ -81,20 +80,15 @@ async function iniciarRobot() {
         if (!nuevaPestana) throw new Error("No se abrió la pestaña del ERP");
 
         // --- MANIOBRA DE MEMORIA ---
-        // 1. Asignamos la nueva pestaña
         pestanaTrabajo = nuevaPestana;
         
-        // 2. Cerramos la pestaña vieja INMEDIATAMENTE para liberar RAM
         console.log('   > 4. Liberando memoria (Cerrando Login)...');
         await pestanaLogin.close();
 
-        // 3. Estabilizamos la nueva pestaña
         pestanaTrabajo.setDefaultNavigationTimeout(60000);
         pestanaTrabajo.setDefaultTimeout(60000);
         await pestanaTrabajo.setViewport({ width: 1920, height: 1080 });
 
-        // Esperamos a que el Dashboard cargue un poco antes de navegar
-        // Esto evita el error "Requesting main frame too early"
         console.log('   > 5. Estabilizando Dashboard (10s)...');
         await new Promise(r => setTimeout(r, 10000));
 
@@ -121,6 +115,11 @@ async function iniciarRobot() {
 
 iniciarRobot();
 
+// --- RUTA PING (Para UptimeRobot o similares) ---
+app.get('/ping', (req, res) => {
+    res.send('pong');
+});
+
 // --- ENDPOINT CONSULTA ---
 app.get('/consultar', async (req, res) => {
     const skuBuscado = req.query.sku;
@@ -141,24 +140,20 @@ app.get('/consultar', async (req, res) => {
         const selectorInput = 'input[formcontrolname="searchInputText"]';
 
         // 1. LIMPIEZA Y BÚSQUEDA
-        // Usamos evaluate para poner el foco seguro
         await pestanaTrabajo.evaluate((sel) => {
             const el = document.querySelector(sel);
             if(el) el.focus();
         }, selectorInput);
         
-        // Limpiamos con teclado (Ctrl+A -> Backspace)
         await pestanaTrabajo.keyboard.down('Control');
         await pestanaTrabajo.keyboard.press('A');
         await pestanaTrabajo.keyboard.up('Control');
         await pestanaTrabajo.keyboard.press('Backspace');
 
-        // Escribimos letra por letra (más estable que pegar de golpe)
         await pestanaTrabajo.type(selectorInput, skuLimpio, { delay: 50 });
         await new Promise(r => setTimeout(r, 200));
         await pestanaTrabajo.keyboard.press('Enter');
         
-        // Esperamos resultados
         await new Promise(r => setTimeout(r, 4000));
 
         // 2. BUSCAR FILA Y CLICK EN MENÚ
@@ -192,7 +187,7 @@ app.get('/consultar', async (req, res) => {
         }
 
         // 3. OPCIÓN "STOCK POR BODEGA"
-        console.log('   > Buscando opción menú...');
+        console.log('   > Abriendo detalle de bodegas...');
         try {
             const xpathOpcion = "//span[contains(text(), 'Stock por bodega')]";
             await pestanaTrabajo.waitForXPath(xpathOpcion, { visible: true, timeout: 5000 });
@@ -203,7 +198,6 @@ app.get('/consultar', async (req, res) => {
         }
 
         // 4. LEER POPUP
-        console.log('   > Leyendo popup...');
         await pestanaTrabajo.waitForSelector('.stock-article-storage-dialog', { timeout: 10000 });
         await new Promise(r => setTimeout(r, 1000));
 
@@ -246,11 +240,7 @@ app.get('/consultar', async (req, res) => {
 
         console.log('   > Éxito:', respuestaFinal.codigo);
 
-        res.json({ 
-            status: 'ok', 
-            mensaje: 'Encontrado', 
-            data: respuestaFinal 
-        });
+        res.json({ status: 'ok', mensaje: 'Encontrado', data: respuestaFinal });
 
     } catch (error) {
         console.error('Error búsqueda:', error);
@@ -264,12 +254,23 @@ app.get('/consultar', async (req, res) => {
     }
 });
 
-// Ping
+// --- LATIDO CARDÍACO (CADA 48 SEGUNDOS) ---
 setInterval(async () => {
-    if (robotListo && pestanaTrabajo) {
-        try { await pestanaTrabajo.evaluate(() => document.body.click()); } catch(e) {}
+    if (robotListo && pestanaTrabajo && !robotOcupado) {
+        console.log('💓 Heartbeat (48s): Pateando la jaula...');
+        try {
+            // Hacemos un micro-scroll para simular actividad humana real
+            await pestanaTrabajo.evaluate(() => {
+                window.scrollBy(0, 10);
+                setTimeout(() => window.scrollBy(0, -10), 100);
+            });
+        } catch(e) {
+            console.log('⚠️ Alerta: El robot no responde al latido.');
+            // Si falla el latido, asumimos que se cayó y marcamos para reinicio
+            robotListo = false; 
+        }
     }
-}, 300000);
+}, 48000); // 48 segundos exactos
 
 app.listen(port, () => {
     console.log(`🚀 Servidor listo en puerto ${port}`);
