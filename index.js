@@ -74,7 +74,7 @@ async function iniciarRobot() {
         console.log('   > 1.1 Esperando casilla de correo...');
         await pestanaLogin.waitForSelector('input[formcontrolname="email"]', { timeout: 60000 });
 
-        await pestanaLogin.type('input[formcontrolname="email"]', 'oz@microchip.com'); 
+        await pestanaLogin.type('input[formcontrolname="email"]', 'oz@microchip.cl'); 
         await pestanaLogin.type('input[formcontrolname="password"]', '@Emmet5264305!'); 
         
         console.log('   > 2. Credenciales escritas. Entrando...');
@@ -293,3 +293,4 @@ setInterval(async () => {
 app.listen(port, () => {
     console.log(`🚀 Servidor listo en puerto ${port}`);
 });
+
