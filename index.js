@@ -16,9 +16,9 @@ app.use((req, res, next) => {
     next();
 });
 
-// --- FUNCIÓN DE INICIO (A PRUEBA DE LENTITUD) ---
+// --- FUNCIÓN DE INICIO ROBUSTA ---
 async function iniciarRobot() {
-    console.log('--- VERSIÓN v5.4 (CARGA A PRUEBA DE FALLOS) ---'); 
+    console.log('--- VERSIÓN v5.3 (PACIENCIA DE ACERO) ---'); 
     console.log('🤖 INICIANDO ROBOT...');
     robotListo = false;
 
@@ -39,56 +39,50 @@ async function iniciarRobot() {
 
         const pestanaLogin = await globalBrowser.newPage();
         
-        // INTERCEPTOR AGRESIVO: Bloqueamos TODO lo que no sea esencial
+        // INTERCEPTOR DE PETICIONES (Ahorra memoria y datos)
         await pestanaLogin.setRequestInterception(true);
         pestanaLogin.on('request', (req) => {
-            const resourceType = req.resourceType();
-            // Bloqueamos imágenes, fuentes, media y hojas de estilo pesadas
-            if (['image', 'font', 'media', 'stylesheet'].includes(resourceType)) {
+            if (['image', 'font', 'media'].includes(req.resourceType())) {
                 req.abort();
             } else {
                 req.continue();
             }
         });
 
-        // Timeout generoso de 3 minutos para el arranque total
-        pestanaLogin.setDefaultNavigationTimeout(180000); 
-        pestanaLogin.setDefaultTimeout(180000);
+        // AUMENTAMOS TIMEOUT A 120 SEGUNDOS (Vital para Render Free)
+        pestanaLogin.setDefaultNavigationTimeout(120000); 
+        pestanaLogin.setDefaultTimeout(120000);
         await pestanaLogin.setViewport({ width: 1920, height: 1080 });
 
-        console.log('   > 1. Autenticando (Intento de carga)...');
-        
-        // TRUCO: Usamos try/catch en el goto.
-        // Si la página tarda mucho en cargar "completamente", el error salta, 
-        // pero nosotros LO IGNORAMOS si el input ya existe.
+        console.log('   > 1. Autenticando...');
+        // Usamos wait until networkidle2 solo aquí para asegurar carga del form
         try {
-            await pestanaLogin.goto('https://portal.defontana.com/login', { 
-                waitUntil: 'domcontentloaded',
-                timeout: 60000 // Le damos 1 minuto para cargar
-            });
+            await pestanaLogin.goto('https://portal.defontana.com/login', { waitUntil: 'domcontentloaded' });
         } catch (e) {
-            console.log('   (⚠️ Aviso: La carga total tardó, verificando si podemos escribir...)');
+            console.log('   (Nota: El goto inicial tardó, pero seguimos...)');
         }
         
-        // Esperamos específicamente el input. Si esto falla, ahí sí hay problema.
-        console.log('   > 1.1 Esperando casilla de correo...');
-        await pestanaLogin.waitForSelector('input[formcontrolname="email"]', { timeout: 60000 });
-
+        await pestanaLogin.waitForSelector('input[formcontrolname="email"]');
         await pestanaLogin.type('input[formcontrolname="email"]', 'oz@microchip.cl'); 
         await pestanaLogin.type('input[formcontrolname="password"]', '@Emmet5264305!'); 
         
-        console.log('   > 2. Credenciales escritas. Entrando...');
-        
-        // Click sin esperar navegación compleja (para evitar timeouts)
+        // ESTRATEGIA NUEVA: NO ESPERAR NAVEGACIÓN, ESPERAR EL RESULTADO
+        console.log('   > 2. Enviando credenciales...');
         await pestanaLogin.click('button.df-primario');
 
-        console.log('   > 3. Esperando botón "ERP Digital"...');
+        // En lugar de waitForNavigation (que falla), esperamos que aparezca el botón del éxito
+        console.log('   > 3. Esperando botón "ERP Digital" (Hasta 120s)...');
         const erpButtonSelector = "//h3[contains(text(), 'ERP Digital')]";
         
-        // Esperamos a que aparezca el botón, ignorando si la página sigue cargando cosas de fondo
-        await pestanaLogin.waitForXPath(erpButtonSelector, { visible: true, timeout: 120000 });
+        try {
+            await pestanaLogin.waitForXPath(erpButtonSelector, { timeout: 120000, visible: true });
+        } catch (error) {
+            throw new Error("Timeout esperando entrar. Posible clave incorrecta o Defontana caído.");
+        }
+        
         const [erpButton] = await pestanaLogin.$x(erpButtonSelector);
         
+        // Preparamos captura de pestaña nueva
         const newTargetPromise = globalBrowser.waitForTarget(target => target.opener() === pestanaLogin.target());
         
         await erpButton.click();
@@ -99,25 +93,23 @@ async function iniciarRobot() {
 
         if (!nuevaPestana) throw new Error("No se abrió la pestaña del ERP");
 
+        // --- CAMBIO DE PESTAÑA ---
         pestanaTrabajo = nuevaPestana;
         
-        console.log('   > 5. Cerrando Login (Ahorro RAM)...');
-        await pestanaLogin.close();
+        console.log('   > 5. Liberando memoria (Cerrando Login)...');
+        await pestanaLogin.close(); // Cerramos la vieja
 
-        // Configuración pestaña trabajo
+        // Configuración de la nueva pestaña de trabajo
         pestanaTrabajo.setDefaultNavigationTimeout(120000);
         pestanaTrabajo.setDefaultTimeout(120000);
         await pestanaTrabajo.setViewport({ width: 1920, height: 1080 });
 
-        console.log('   > 6. Estabilizando (10s)...');
+        console.log('   > 6. Estabilizando Dashboard (10s)...');
         await new Promise(r => setTimeout(r, 10000));
 
         console.log('   > 7. Yendo a Maestro-UX...');
-        try {
-            await pestanaTrabajo.goto('https://maestro-ux.defontana.com/article', { waitUntil: 'domcontentloaded', timeout: 90000 });
-        } catch(e) {
-            console.log('   (⚠️ Carga lenta de Maestro-UX, intentando seguir...)');
-        }
+        // Usamos domcontentloaded, es más rápido y menos propenso a timeout
+        await pestanaTrabajo.goto('https://maestro-ux.defontana.com/article', { waitUntil: 'domcontentloaded' });
 
         console.log('   > 8. Esperando buscador...');
         await pestanaTrabajo.waitForSelector('input[formcontrolname="searchInputText"]', { timeout: 60000 });
@@ -293,4 +285,3 @@ setInterval(async () => {
 app.listen(port, () => {
     console.log(`🚀 Servidor listo en puerto ${port}`);
 });
-
