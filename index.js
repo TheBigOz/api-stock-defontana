@@ -257,7 +257,7 @@ app.get('/consultar', async (req, res) => {
 // --- LATIDO CARDÍACO (CADA 48 SEGUNDOS) ---
 setInterval(async () => {
     if (robotListo && pestanaTrabajo && !robotOcupado) {
-        console.log('💓 Heartbeat (48s): Pateando la jaula...');
+        console.log('💓 Heartbeat (40s): Pateando la jaula...');
         try {
             // Hacemos un micro-scroll para simular actividad humana real
             await pestanaTrabajo.evaluate(() => {
@@ -270,8 +270,9 @@ setInterval(async () => {
             robotListo = false; 
         }
     }
-}, 48000); // 48 segundos exactos
+}, 40000); // 40 segundos exactos
 
 app.listen(port, () => {
     console.log(`🚀 Servidor listo en puerto ${port}`);
 });
+
