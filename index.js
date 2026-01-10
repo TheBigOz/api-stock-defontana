@@ -16,9 +16,9 @@ app.use((req, res, next) => {
     next();
 });
 
-// --- FUNCIÓN DE INICIO ULTRA LIGERA ---
+// --- FUNCIÓN DE INICIO (CON ESCALA TÉCNICA EN HOME) ---
 async function iniciarRobot() {
-    console.log('--- VERSIÓN v5.5 (ULTRA LIGHT) ---'); 
+    console.log('--- VERSIÓN v5.7 (ESCALA TÉCNICA EN HOME) ---'); 
     console.log('🤖 INICIANDO ROBOT...');
     robotListo = false;
 
@@ -26,81 +26,61 @@ async function iniciarRobot() {
         if (globalBrowser) await globalBrowser.close();
 
         globalBrowser = await puppeteer.launch({
-            headless: true,
+            headless: "new",
             args: [
                 '--no-sandbox', 
                 '--disable-setuid-sandbox',
                 '--disable-dev-shm-usage',
                 '--single-process',
                 '--no-zygote',
-                // OPTIMIZACIONES DE MEMORIA EXTREMAS
                 '--disable-gpu',
                 '--disable-extensions',
-                '--disable-background-networking',
-                '--disable-default-apps',
-                '--disable-sync',
                 '--mute-audio',
-                '--no-first-run',
-                '--window-size=1366,768' // Resolución más pequeña = Menos RAM
+                '--window-size=1280,720'
             ]
         });
 
         const pestanaLogin = await globalBrowser.newPage();
         
-        // INTERCEPTOR AGRESIVO
+        // INTERCEPTOR 1: Login y Portal (Bloqueo agresivo)
         await pestanaLogin.setRequestInterception(true);
         pestanaLogin.on('request', (req) => {
-            const rType = req.resourceType();
-            // Bloqueamos TODO lo visual pesado
-            if (['image', 'font', 'media', 'stylesheet', 'other'].includes(rType)) {
+            if (['image', 'font', 'media', 'stylesheet', 'other'].includes(req.resourceType())) {
                 req.abort();
             } else {
                 req.continue();
             }
         });
 
-        // Timeout largo por si internet es lento
         pestanaLogin.setDefaultNavigationTimeout(120000); 
-        await pestanaLogin.setViewport({ width: 1366, height: 768 });
+        await pestanaLogin.setViewport({ width: 1280, height: 720 });
 
         console.log('   > 1. Autenticando...');
-        
         try {
-            await pestanaLogin.goto('https://portal.defontana.com/login', { 
-                waitUntil: 'domcontentloaded', 
-                timeout: 60000 
-            });
-        } catch (e) {
-            console.log('   (Nota: Carga lenta, intentando continuar...)');
-        }
-        
-        // Esperamos el input (esto confirma que la página cargó lo necesario)
-        await pestanaLogin.waitForSelector('input[formcontrolname="email"]', { timeout: 60000 });
+            await pestanaLogin.goto('https://portal.defontana.com/login', { waitUntil: 'domcontentloaded', timeout: 60000 });
+        } catch (e) {}
 
+        await pestanaLogin.waitForSelector('input[formcontrolname="email"]', { timeout: 60000 });
         await pestanaLogin.type('input[formcontrolname="email"]', 'oz@microchip.cl'); 
         await pestanaLogin.type('input[formcontrolname="password"]', '@Emmet53279!'); 
         
-        console.log('   > 2. Enviando credenciales...');
-        
-        // CLICK SIMPLE (Sin Promise.all para no sobrecargar)
+        console.log('   > 2. Entrando al Portal...');
         await pestanaLogin.click('button.df-primario');
 
-        console.log('   > 3. Esperando carga del Portal (Paciencia)...');
-        
-        // Esperamos explícitamente el selector del ERP
+        // Esperamos el botón del ERP
         const erpButtonSelector = "//h3[contains(text(), 'ERP Digital')]";
         try {
-            await pestanaLogin.waitForXPath(erpButtonSelector, { visible: true, timeout: 120000 });
+            await pestanaLogin.waitForXPath(erpButtonSelector, { visible: true, timeout: 60000 });
         } catch (error) {
-            throw new Error("El navegador se cerró o no encontró el botón ERP (Memoria insuficiente).");
+            throw new Error("No cargó el Portal (Memoria o Timeout).");
         }
         
         const [erpButton] = await pestanaLogin.$x(erpButtonSelector);
         
-        // Preparamos captura
+        // Preparamos la captura de la pestaña HOME
         const newTargetPromise = globalBrowser.waitForTarget(target => target.opener() === pestanaLogin.target());
         
-        console.log('   > 4. Clic en ERP Digital...');
+        console.log('   > 3. Clic en ERP... Abriendo HOME...');
         await erpButton.click();
         
         const newTarget = await newTargetPromise;
@@ -108,29 +88,39 @@ async function iniciarRobot() {
 
         if (!nuevaPestana) throw new Error("No se abrió la pestaña del ERP");
 
-        // CAMBIO DE PESTAÑA
+        // --- GESTIÓN DE LA NUEVA PESTAÑA (HOME) ---
         pestanaTrabajo = nuevaPestana;
-        
-        console.log('   > 5. Liberando RAM (Cerrando Login)...');
-        await pestanaLogin.close(); // Vital
 
-        // Configuración nueva pestaña
+        // ¡IMPORTANTE! Activamos el bloqueo en la nueva pestaña inmediatamente para que el Dashboard no consuma RAM
+        await pestanaTrabajo.setRequestInterception(true);
+        pestanaTrabajo.on('request', (req) => {
+            if (['image', 'font', 'media', 'stylesheet', 'other'].includes(req.resourceType())) {
+                req.abort(); // Bloqueamos los gráficos del Dashboard
+            } else {
+                req.continue();
+            }
+        });
+
+        // Cerramos login para ahorrar
+        await pestanaLogin.close();
+
         pestanaTrabajo.setDefaultNavigationTimeout(120000);
-        pestanaTrabajo.setDefaultTimeout(120000);
-        await pestanaTrabajo.setViewport({ width: 1366, height: 768 });
+        await pestanaTrabajo.setViewport({ width: 1280, height: 720 });
 
-        console.log('   > 6. Estabilizando Dashboard (10s)...');
+        // AQUÍ ESTÁ EL CAMBIO QUE PEDISTE:
+        console.log('   > 4. Marcando presencia en HOME (10s)...');
+        // Dejamos que la URL https://erp.defontana.com/#/Home cargue sus scripts básicos
+        // y valide el token, pero sin cargar imágenes gracias al interceptor.
         await new Promise(r => setTimeout(r, 10000));
 
-        console.log('   > 7. Yendo a Maestro-UX...');
+        console.log('   > 5. Token validado. Saltando a Maestro-UX...');
         await pestanaTrabajo.goto('https://maestro-ux.defontana.com/article', { waitUntil: 'domcontentloaded' });
 
-        console.log('   > 8. Esperando buscador...');
+        console.log('   > 6. Esperando buscador...');
         await pestanaTrabajo.waitForSelector('input[formcontrolname="searchInputText"]', { timeout: 60000 });
         
-        // Check rápido de tabla
         try {
-            await pestanaTrabajo.waitForSelector('tr.mat-row', { timeout: 15000 });
+            await pestanaTrabajo.waitForSelector('tr.mat-row', { timeout: 20000 });
             console.log('   > Tabla inicial detectada.');
         } catch(e) { console.log('   > Tabla vacía o cargando...'); }
 
@@ -146,7 +136,7 @@ async function iniciarRobot() {
 
 iniciarRobot();
 
-// --- RUTA PING ---
+// Ping
 app.get('/ping', (req, res) => res.send('pong'));
 
 // --- ENDPOINT CONSULTA ---
@@ -168,24 +158,20 @@ app.get('/consultar', async (req, res) => {
     try {
         const selectorInput = 'input[formcontrolname="searchInputText"]';
 
-        // 1. LIMPIEZA Y BÚSQUEDA
+        // 1. Limpieza y Escritura
         await pestanaTrabajo.evaluate((sel) => {
             const el = document.querySelector(sel);
             if(el) el.focus();
+            el.value = '';
         }, selectorInput);
         
-        // Limpieza rápida
-        await pestanaTrabajo.evaluate((sel) => {
-             document.querySelector(sel).value = '';
-        }, selectorInput);
-        
-        await pestanaTrabajo.type(selectorInput, skuLimpio, { delay: 100 });
+        await pestanaTrabajo.type(selectorInput, skuLimpio, { delay: 50 });
         await new Promise(r => setTimeout(r, 200));
         await pestanaTrabajo.keyboard.press('Enter');
         
         await new Promise(r => setTimeout(r, 4000));
 
-        // 2. BUSCAR FILA Y CLICK EN MENÚ
+        // 2. Buscar fila y abrir menú
         const datosGenerales = await pestanaTrabajo.evaluate(async (sku) => {
             const filas = document.querySelectorAll('tr.mat-row');
             for (let fila of filas) {
@@ -195,8 +181,8 @@ app.get('/consultar', async (req, res) => {
                 if (textoCodigo === sku) {
                     const celdaDesc = fila.querySelector('.mat-column-description');
                     const celdaPrecio = fila.querySelector('.mat-column-salePrice');
-                    
                     const botonMenu = fila.querySelector('.mat-menu-trigger');
+                    
                     if (botonMenu) {
                         botonMenu.click(); 
                         return { 
@@ -215,7 +201,7 @@ app.get('/consultar', async (req, res) => {
             return res.json({ status: 'ok', mensaje: 'No encontrado', data: { codigo: skuLimpio, stockTotal: 0 } });
         }
 
-        // 3. OPCIÓN "STOCK POR BODEGA"
+        // 3. Clic en Stock por Bodega
         try {
             const xpathOpcion = "//span[contains(text(), 'Stock por bodega')]";
             await pestanaTrabajo.waitForXPath(xpathOpcion, { visible: true, timeout: 5000 });
@@ -225,7 +211,7 @@ app.get('/consultar', async (req, res) => {
             throw new Error("Menú no desplegó opción");
         }
 
-        // 4. LEER POPUP
+        // 4. Leer Popup
         await pestanaTrabajo.waitForSelector('.stock-article-storage-dialog', { timeout: 10000 });
         await new Promise(r => setTimeout(r, 1000));
 
@@ -251,7 +237,7 @@ app.get('/consultar', async (req, res) => {
             return { central, ventas };
         });
 
-        // 5. CERRAR POPUP
+        // 5. Cerrar Popup
         await pestanaTrabajo.keyboard.press('Escape');
         await new Promise(r => setTimeout(r, 500));
 
@@ -281,18 +267,16 @@ app.get('/consultar', async (req, res) => {
     }
 });
 
-// --- LATIDO CARDÍACO ---
+// Latido
 setInterval(async () => {
     if (robotListo && pestanaTrabajo && !robotOcupado) {
-        console.log('💓 Heartbeat (48s)...');
+        console.log('💓 Heartbeat...');
         try {
             await pestanaTrabajo.evaluate(() => {
                 window.scrollBy(0, 10);
                 setTimeout(() => window.scrollBy(0, -10), 100);
             });
-        } catch(e) {
-            robotListo = false; 
-        }
+        } catch(e) { robotListo = false; }
     }
 }, 48000);
 
