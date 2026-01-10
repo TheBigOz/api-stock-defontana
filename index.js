@@ -3,8 +3,9 @@ const puppeteer = require('puppeteer');
 const app = express();
 const port = process.env.PORT || 3000;
 
+// Variables Globales
 let globalBrowser = null;
-let workPage = null; // La página MAESTRA donde trabajaremos
+let workPage = null; // La página del ERP donde buscaremos
 let robotListo = false;
 let robotOcupado = false;
 
@@ -15,7 +16,7 @@ app.use((req, res, next) => {
 
 // --- FUNCIÓN DE INICIO ---
 async function iniciarRobot() {
-    console.log('🤖 INICIANDO ROBOT (Modo Seguro v3)...');
+    console.log('🤖 INICIANDO ROBOT (Versión Final)...');
     robotListo = false;
 
     try {
@@ -33,56 +34,55 @@ async function iniciarRobot() {
             ]
         });
 
-        // 1. PESTAÑA DE LOGIN
-        const loginPage = await globalBrowser.newPage();
+        // 1. PESTAÑA DE LOGIN (Usamos variable 'page' para evitar errores)
+        const page = await globalBrowser.newPage();
         
-        loginPage.setDefaultNavigationTimeout(60000);
-        loginPage.setDefaultTimeout(60000);
-        await loginPage.setViewport({ width: 1920, height: 1080 });
+        page.setDefaultNavigationTimeout(60000);
+        page.setDefaultTimeout(60000);
+        await page.setViewport({ width: 1920, height: 1080 });
 
         console.log('   > 1. Autenticando en Portal...');
-        await loginPage.goto('https://portal.defontana.com/login', { waitUntil: 'domcontentloaded' });
+        await page.goto('https://portal.defontana.com/login', { waitUntil: 'domcontentloaded' });
         
-        await loginPage.waitForSelector('input[formcontrolname="email"]');
- // CREDENCIALES
+        await page.waitForSelector('input[formcontrolname="email"]');
+// CREDENCIALES
         await page.type('input[formcontrolname="email"]', 'oz@microchip.cl'); 
         await page.type('input[formcontrolname="password"]', '@Emmet5264305!'); 
-
         
         await Promise.all([
-            loginPage.click('button.df-primario'),
-            loginPage.waitForNavigation({ waitUntil: 'domcontentloaded' })
+            page.click('button.df-primario'),
+            page.waitForNavigation({ waitUntil: 'domcontentloaded' })
         ]);
 
         console.log('   > 2. Login OK. Buscando botón ERP...');
 
         // 2. CLICK PARA OBTENER PERMISOS
         const erpButtonSelector = "//h3[contains(text(), 'ERP Digital')]";
-        await loginPage.waitForXPath(erpButtonSelector);
-        const [erpButton] = await loginPage.$x(erpButtonSelector);
+        await page.waitForXPath(erpButtonSelector);
+        const [erpButton] = await page.$x(erpButtonSelector);
         
-        // --- AQUÍ ESTABA EL ERROR ANTES (Decía page.target, ahora dice loginPage.target) ---
-        const newTargetPromise = globalBrowser.waitForTarget(target => target.opener() === loginPage.target());
+        // Preparamos la captura de la NUEVA pestaña
+        const newTargetPromise = globalBrowser.waitForTarget(target => target.opener() === page.target());
         
         await erpButton.click();
         console.log('   > 3. Entrando al ERP (Validando)...');
         
         const newTarget = await newTargetPromise;
-        const erpPage = await newTarget.page(); // ¡Esta es la buena!
+        const erpPage = await newTarget.page(); // ¡Pestaña nueva capturada!
 
         if (!erpPage) throw new Error("No se abrió la pestaña del ERP");
 
-        // Asignamos la nueva pestaña a nuestra variable global de trabajo
+        // Asignamos a la variable global
         workPage = erpPage;
         
         workPage.setDefaultNavigationTimeout(60000);
         workPage.setDefaultTimeout(60000);
         await workPage.setViewport({ width: 1920, height: 1080 });
 
-        // Esperamos un poco para que el servidor valide el token
+        // Esperamos validación de token
         await new Promise(r => setTimeout(r, 8000));
 
-        // 3. NAVEGACIÓN DIRECTA A ARTÍCULOS
+        // 3. NAVEGACIÓN DIRECTA A ARTÍCULOS (En la pestaña nueva)
         console.log('   > 4. Yendo a Maestro-UX...');
         await workPage.goto('https://maestro-ux.defontana.com/article', { waitUntil: 'networkidle2' });
 
@@ -92,7 +92,7 @@ async function iniciarRobot() {
         
         await workPage.waitForSelector(selectorInput, { timeout: 40000 });
         
-        // Esperamos que la tabla cargue
+        // Espera de tabla (opcional)
         try {
             await workPage.waitForSelector('tr.mat-row', { timeout: 10000 });
             console.log('   > Tabla inicial detectada.');
@@ -100,8 +100,8 @@ async function iniciarRobot() {
 
         console.log('   ✅ ROBOT ESTACIONADO Y LISTO');
         
-        // Cerramos la pestaña vieja
-        try { await loginPage.close(); } catch(e) {}
+        // Cerramos la pestaña de login vieja para liberar memoria
+        try { await page.close(); } catch(e) {}
         
         robotListo = true;
 
@@ -119,7 +119,6 @@ app.get('/consultar', async (req, res) => {
     const skuBuscado = req.query.sku;
     if (!skuBuscado) return res.status(400).json({ error: 'Falta SKU' });
     
-    // Si el robot murió, lo revivimos
     if (!robotListo || !workPage) {
         iniciarRobot(); 
         return res.status(503).json({ error: 'Reiniciando sistema... Espera 1 min.' });
@@ -134,14 +133,13 @@ app.get('/consultar', async (req, res) => {
     try {
         const selectorInput = 'input[formcontrolname="searchInputText"]';
 
-        // 1. ESCRITURA SEGURA (Inyección JS)
+        // 1. ESCRITURA SEGURA
         await workPage.evaluate((sel, texto) => {
             const input = document.querySelector(sel);
             if (!input) return;
             
             input.focus();
             input.value = texto;
-            // Disparamos eventos para que Angular reaccione
             input.dispatchEvent(new Event('input', { bubbles: true }));
             input.dispatchEvent(new Event('change', { bubbles: true }));
         }, selectorInput, skuLimpio);
@@ -150,7 +148,6 @@ app.get('/consultar', async (req, res) => {
         await workPage.keyboard.press('Enter');
 
         // 2. ESPERA
-        // Esperamos 4 segundos para que refresque la tabla
         await new Promise(r => setTimeout(r, 4000));
 
         // 3. EXTRACCIÓN
@@ -158,7 +155,6 @@ app.get('/consultar', async (req, res) => {
             const filas = document.querySelectorAll('tr.mat-row');
             const debugInfo = []; 
 
-            // Chequeo de seguridad: ¿Sesión caducada?
             if (filas.length === 0) {
                 const body = document.body.innerText;
                 if (body.includes('no tiene permiso') || body.includes('Login')) {
@@ -173,10 +169,9 @@ app.get('/consultar', async (req, res) => {
                 
                 debugInfo.push(textoCodigo);
 
-                // Buscamos coincidencia (usamos includes por seguridad)
                 if (textoCodigo.includes(sku)) {
                     const celdaDesc = fila.querySelector('.mat-column-description');
-                    const celdaStock = fila.querySelector('.mat-column-stock'); // A veces tiene un span dentro
+                    const celdaStock = fila.querySelector('.mat-column-stock'); 
                     const celdaPrecio = fila.querySelector('.mat-column-salePrice');
 
                     return {
@@ -215,7 +210,6 @@ app.get('/consultar', async (req, res) => {
     } catch (error) {
         console.error('Error búsqueda:', error);
         robotOcupado = false;
-        // Si hay error crítico, forzamos reinicio
         if (error.message.includes('Target closed') || error.message.includes('Session closed')) {
             robotListo = false;
         }
@@ -223,7 +217,7 @@ app.get('/consultar', async (req, res) => {
     }
 });
 
-// Ping para mantener vivo
+// Ping
 setInterval(async () => {
     if (robotListo && workPage) {
         try { await workPage.evaluate(() => document.body.click()); } catch(e) {}
