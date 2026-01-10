@@ -3,9 +3,9 @@ const puppeteer = require('puppeteer');
 const app = express();
 const port = process.env.PORT || 3000;
 
-// Variables Globales
+// VARIABLES GLOBALES
 let globalBrowser = null;
-let workPage = null; // La página del ERP donde buscaremos
+let pestanaTrabajo = null; // La pestaña del ERP (Maestro-UX)
 let robotListo = false;
 let robotOcupado = false;
 
@@ -16,7 +16,8 @@ app.use((req, res, next) => {
 
 // --- FUNCIÓN DE INICIO ---
 async function iniciarRobot() {
-    console.log('🤖 INICIANDO ROBOT (Versión Final)...');
+    console.log('--- VERSIÓN FINAL v4.0 ---'); // Busca esto en el log
+    console.log('🤖 INICIANDO ROBOT...');
     robotListo = false;
 
     try {
@@ -34,74 +35,74 @@ async function iniciarRobot() {
             ]
         });
 
-        // 1. PESTAÑA DE LOGIN (Usamos variable 'page' para evitar errores)
-        const page = await globalBrowser.newPage();
+        // 1. PESTAÑA DE LOGIN (Variable: pestanaLogin)
+        const pestanaLogin = await globalBrowser.newPage();
         
-        page.setDefaultNavigationTimeout(60000);
-        page.setDefaultTimeout(60000);
-        await page.setViewport({ width: 1920, height: 1080 });
+        pestanaLogin.setDefaultNavigationTimeout(60000);
+        pestanaLogin.setDefaultTimeout(60000);
+        await pestanaLogin.setViewport({ width: 1920, height: 1080 });
 
         console.log('   > 1. Autenticando en Portal...');
-        await page.goto('https://portal.defontana.com/login', { waitUntil: 'domcontentloaded' });
+        await pestanaLogin.goto('https://portal.defontana.com/login', { waitUntil: 'domcontentloaded' });
         
-        await page.waitForSelector('input[formcontrolname="email"]');
-// CREDENCIALES
-        await page.type('input[formcontrolname="email"]', 'oz@microchip.cl'); 
-        await page.type('input[formcontrolname="password"]', '@Emmet5264305!'); 
+        await pestanaLogin.waitForSelector('input[formcontrolname="email"]');
+        await pestanaLogin.type('input[formcontrolname="email"]', 'oz@microchip.cl'); 
+        await pestanaLogin.type('input[formcontrolname="password"]', '@Emmet5264305!');
+        
         
         await Promise.all([
-            page.click('button.df-primario'),
-            page.waitForNavigation({ waitUntil: 'domcontentloaded' })
+            pestanaLogin.click('button.df-primario'),
+            pestanaLogin.waitForNavigation({ waitUntil: 'domcontentloaded' })
         ]);
 
         console.log('   > 2. Login OK. Buscando botón ERP...');
 
         // 2. CLICK PARA OBTENER PERMISOS
         const erpButtonSelector = "//h3[contains(text(), 'ERP Digital')]";
-        await page.waitForXPath(erpButtonSelector);
-        const [erpButton] = await page.$x(erpButtonSelector);
+        await pestanaLogin.waitForXPath(erpButtonSelector);
+        const [erpButton] = await pestanaLogin.$x(erpButtonSelector);
         
-        // Preparamos la captura de la NUEVA pestaña
-        const newTargetPromise = globalBrowser.waitForTarget(target => target.opener() === page.target());
+        // Preparamos la captura de la NUEVA pestaña (Usamos pestanaLogin como referencia)
+        const newTargetPromise = globalBrowser.waitForTarget(target => target.opener() === pestanaLogin.target());
         
         await erpButton.click();
         console.log('   > 3. Entrando al ERP (Validando)...');
         
         const newTarget = await newTargetPromise;
-        const erpPage = await newTarget.page(); // ¡Pestaña nueva capturada!
+        const nuevaPestana = await newTarget.page(); 
 
-        if (!erpPage) throw new Error("No se abrió la pestaña del ERP");
+        if (!nuevaPestana) throw new Error("No se abrió la pestaña del ERP");
 
-        // Asignamos a la variable global
-        workPage = erpPage;
+        // Asignamos a la variable global (pestanaTrabajo)
+        pestanaTrabajo = nuevaPestana;
         
-        workPage.setDefaultNavigationTimeout(60000);
-        workPage.setDefaultTimeout(60000);
-        await workPage.setViewport({ width: 1920, height: 1080 });
+        pestanaTrabajo.setDefaultNavigationTimeout(60000);
+        pestanaTrabajo.setDefaultTimeout(60000);
+        await pestanaTrabajo.setViewport({ width: 1920, height: 1080 });
 
         // Esperamos validación de token
         await new Promise(r => setTimeout(r, 8000));
 
         // 3. NAVEGACIÓN DIRECTA A ARTÍCULOS (En la pestaña nueva)
         console.log('   > 4. Yendo a Maestro-UX...');
-        await workPage.goto('https://maestro-ux.defontana.com/article', { waitUntil: 'networkidle2' });
+        await pestanaTrabajo.goto('https://maestro-ux.defontana.com/article', { waitUntil: 'networkidle2' });
 
         // 4. VERIFICACIÓN FINAL
         console.log('   > 5. Esperando buscador...');
         const selectorInput = 'input[formcontrolname="searchInputText"]';
         
-        await workPage.waitForSelector(selectorInput, { timeout: 40000 });
+        await pestanaTrabajo.waitForSelector(selectorInput, { timeout: 40000 });
         
-        // Espera de tabla (opcional)
+        // Espera de tabla
         try {
-            await workPage.waitForSelector('tr.mat-row', { timeout: 10000 });
+            await pestanaTrabajo.waitForSelector('tr.mat-row', { timeout: 10000 });
             console.log('   > Tabla inicial detectada.');
         } catch(e) { console.log('   > Tabla vacía o cargando...'); }
 
         console.log('   ✅ ROBOT ESTACIONADO Y LISTO');
         
         // Cerramos la pestaña de login vieja para liberar memoria
-        try { await page.close(); } catch(e) {}
+        try { await pestanaLogin.close(); } catch(e) {}
         
         robotListo = true;
 
@@ -119,7 +120,8 @@ app.get('/consultar', async (req, res) => {
     const skuBuscado = req.query.sku;
     if (!skuBuscado) return res.status(400).json({ error: 'Falta SKU' });
     
-    if (!robotListo || !workPage) {
+    // Si el robot murió, lo revivimos
+    if (!robotListo || !pestanaTrabajo) {
         iniciarRobot(); 
         return res.status(503).json({ error: 'Reiniciando sistema... Espera 1 min.' });
     }
@@ -133,8 +135,8 @@ app.get('/consultar', async (req, res) => {
     try {
         const selectorInput = 'input[formcontrolname="searchInputText"]';
 
-        // 1. ESCRITURA SEGURA
-        await workPage.evaluate((sel, texto) => {
+        // 1. ESCRITURA SEGURA EN PESTAÑA DE TRABAJO
+        await pestanaTrabajo.evaluate((sel, texto) => {
             const input = document.querySelector(sel);
             if (!input) return;
             
@@ -145,13 +147,13 @@ app.get('/consultar', async (req, res) => {
         }, selectorInput, skuLimpio);
 
         await new Promise(r => setTimeout(r, 200));
-        await workPage.keyboard.press('Enter');
+        await pestanaTrabajo.keyboard.press('Enter');
 
         // 2. ESPERA
         await new Promise(r => setTimeout(r, 4000));
 
         // 3. EXTRACCIÓN
-        const resultado = await workPage.evaluate((sku) => {
+        const resultado = await pestanaTrabajo.evaluate((sku) => {
             const filas = document.querySelectorAll('tr.mat-row');
             const debugInfo = []; 
 
@@ -219,8 +221,8 @@ app.get('/consultar', async (req, res) => {
 
 // Ping
 setInterval(async () => {
-    if (robotListo && workPage) {
-        try { await workPage.evaluate(() => document.body.click()); } catch(e) {}
+    if (robotListo && pestanaTrabajo) {
+        try { await pestanaTrabajo.evaluate(() => document.body.click()); } catch(e) {}
     }
 }, 300000);
 
